@@ -115,6 +115,15 @@ pub fn resolve_toplevel(start: &Path) -> Option<PathBuf> {
         .find(|c| c.join(".git").exists())
 }
 
+/// The worktree root of a checkout with a readable HEAD: the directory the render and the hook
+/// both key the git cache by, so they must get it from here. One walk up from `start`; HEAD is
+/// then looked up from the root itself, which finds the same gitdir without walking again.
+pub fn git_toplevel(start: &Path) -> Option<PathBuf> {
+    let top = resolve_toplevel(start)?;
+    read_head(&top)?;
+    Some(top)
+}
+
 /// Where a linked worktree's `.git` file points: `<root>/.git/worktrees/<name>`.
 const WORKTREES_MARK: &str = "/.git/worktrees/";
 
@@ -337,11 +346,7 @@ pub fn resolve_identity(p: &Payload) -> Identity {
     let start = PathBuf::from(current_dir.or(project_dir).unwrap_or(&cwd_env));
 
     let head = read_head(&start);
-    let toplevel = if head.is_some() {
-        resolve_toplevel(&start)
-    } else {
-        None
-    };
+    let toplevel = git_toplevel(&start);
     let wt = if head.is_some() {
         parse_worktree(&start)
     } else {

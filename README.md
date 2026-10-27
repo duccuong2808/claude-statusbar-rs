@@ -32,6 +32,28 @@ Claude Code already re-runs the status line on every new message and at the prom
 along while the session is idle; once a minute is enough (the cache countdown is shown in whole
 minutes for that reason).
 
+Optional `PostToolUse` hook, so a tool call that changes the worktree (edit, write, `git commit`,
+`git push`, …) reaches the `●` / ahead / behind segment one render sooner: a render only reads
+the git cache, and without the hook the render that notices a change is the one that starts the
+refresh. `csr hook` reads the hook's `cwd` (streamed: a multi-megabyte `tool_response` stays at
+~2 MiB RSS), fingerprints the worktree and runs `git status` only when the fingerprint changed;
+otherwise it writes nothing. If another refresh holds the lock, it waits for it (up to 6 s) and
+checks again, since that refresh may predate the tool's edit.
+
+`async` keeps Claude from waiting on it. The next render comes after Claude's next message
+(hundreds of ms or more), so the hook has normally finished by then; a `git status` slower than
+that (a very large repo) shows up one render later, as without the hook. Its cost is the
+process start plus the fingerprint: ~3 ms up to a few hundred tracked files, ~25 ms at 10 000,
+~50 ms at 20 000 (above that the fingerprint is off and only the 30 s time-to-live applies), plus
+`git status` when something changed. Add it next to any existing `PostToolUse` entry:
+
+```json
+"PostToolUse": [
+  { "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+    "hooks": [{ "type": "command", "command": "/path/to/csr hook", "async": true, "timeout": 15 }] }
+]
+```
+
 ## What it reads
 
 - stdin: `rate_limits`, `model`, `context_window`, `prompt_cache.expires_at`, `cost`, `workspace`, `cwd`.

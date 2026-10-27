@@ -4,7 +4,10 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process;
 
+use serde::Deserialize;
+
 use csr::config::{config_path, Config};
+use csr::gitcache::Trigger;
 use csr::payload::Payload;
 use csr::render::{render, Env};
 use csr::width::clip_lines;
@@ -35,12 +38,14 @@ fn columns(p: &Payload) -> Option<usize> {
 }
 
 const USAGE: &str = "usage: csr            render the status line from Claude Code's stdin JSON
+       csr hook       PostToolUse hook: bring the git cache up to date for the hook's cwd
        csr git-refresh <toplevel> [cache_dir]   (internal) refresh the dirty cache";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         None => render_stdin(),
+        Some("hook") => hook_stdin(),
         Some("git-refresh") => {
             let Some(toplevel) = args.get(2) else {
                 eprintln!("csr: git-refresh needs <toplevel>\n{USAGE}");
@@ -49,7 +54,7 @@ fn main() {
             let cache_dir = args
                 .get(3)
                 .map_or_else(|| csr::cachedir::resolve(&home()), PathBuf::from);
-            csr::gitcache::refresh(&cache_dir, toplevel);
+            csr::gitcache::refresh(&cache_dir, toplevel, Trigger::Render);
         }
         Some("--version" | "-V") => println!("csr {}", env!("CARGO_PKG_VERSION")),
         Some("--help" | "-h") => println!("{USAGE}"),
@@ -57,6 +62,34 @@ fn main() {
             eprintln!("csr: unknown argument {other:?}\n{USAGE}");
             process::exit(2);
         }
+    }
+}
+
+/// The one field `csr hook` needs from the hook payload. Everything else (`tool_input`,
+/// `tool_response`: a whole written file, a Bash command's output) is skipped while parsing
+/// rather than built into a tree and copied.
+#[derive(Deserialize)]
+struct HookInput {
+    cwd: PathBuf,
+}
+
+/// The hook path. A render only reads the git cache, so a tool call that dirties the tree would
+/// otherwise show up one render late (the render that notices it spawns the refresh); running
+/// the refresh here, right after the tool, normally lands before the next render. Same toplevel
+/// as the render (`git_toplevel`), so both use one cache entry; `refresh` skips git when the
+/// fingerprint still matches. Silent and exit 0 whatever the input: hook output would land in
+/// the transcript.
+fn hook_stdin() {
+    // Streamed from stdin, so a multi-megabyte payload is never held in memory.
+    let Ok(input) = serde_json::from_reader::<_, HookInput>(std::io::stdin().lock()) else {
+        return;
+    };
+    if let Some(top) = csr::identity::git_toplevel(&input.cwd) {
+        csr::gitcache::refresh(
+            &csr::cachedir::resolve(&home()),
+            &top.to_string_lossy(),
+            Trigger::Hook,
+        );
     }
 }
 

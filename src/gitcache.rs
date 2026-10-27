@@ -27,6 +27,21 @@ pub const GIT_TIMEOUT_S: f64 = 5.0;
 /// Exit polling interval. A typical git run is ~10 ms, so a coarse poll would mostly be waiting;
 /// a 1 ms try_wait costs microseconds, even over the full timeout of a hung git.
 const POLL: Duration = Duration::from_millis(1);
+/// How long the hook waits for another refresh's lock: past GIT_TIMEOUT_S, so by then that
+/// refresh's git has finished or been killed.
+const LOCK_WAIT: Duration = Duration::from_secs(6);
+const LOCK_POLL: Duration = Duration::from_millis(5);
+
+/// Who asked for a refresh; decides what happens when another refresh holds the lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trigger {
+    /// The detached child a render spawned. Gives up at once on a held lock (its holder clears
+    /// the render's inflight marker when done).
+    Render,
+    /// The PostToolUse hook. Its tool call may have changed the tree after the running refresh
+    /// took its fingerprint, so it waits for the lock and checks again.
+    Hook,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Entry {
@@ -243,43 +258,44 @@ fn run_git(git: &Path, toplevel: &str, out: &Path, timeout: Duration) -> Option<
         .map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
-/// The `csr git-refresh <toplevel>` subcommand body. Runs git (no optional locks, so a killed
-/// run can never strand `.git/index.lock`), writes the cache, clears markers. Exits silently.
-pub fn refresh(cache_dir: &Path, toplevel: &str) {
+/// The body of `csr git-refresh <toplevel>` and `csr hook`. Runs git (no optional locks, so a
+/// killed run can never strand `.git/index.lock`), writes the cache, clears markers. Silent.
+pub fn refresh(cache_dir: &Path, toplevel: &str, trigger: Trigger) {
     refresh_with(
         cache_dir,
         toplevel,
         Path::new("git"),
         Duration::from_secs_f64(GIT_TIMEOUT_S),
+        trigger,
     );
 }
 
 /// `refresh` with the git executable and the timeout injectable (tests use a fake git).
-pub fn refresh_with(cache_dir: &Path, toplevel: &str, git: &Path, timeout: Duration) {
+pub fn refresh_with(
+    cache_dir: &Path,
+    toplevel: &str,
+    git: &Path,
+    timeout: Duration,
+    trigger: Trigger,
+) {
     let path = cache_path(cache_dir, toplevel);
-    if let Some(dir) = path.parent() {
-        let _ = fs::create_dir_all(dir);
-    }
-    let lock = path.with_extension("lock");
-    if let Some(age) = file_age_secs(&lock) {
-        if age < LOCK_MAX_AGE_S as f64 {
-            return; // another refresh is running
-        }
-        let _ = fs::remove_file(&lock);
-    }
-    if fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock)
-        .is_err()
-    {
-        return;
-    }
+    let inflight = path.with_extension("inflight");
     // Taken before git runs: an edit made while it runs then leaves a mismatch, not a stale match.
     let key = gitkey::key(Path::new(toplevel));
-    // A refresh that finished while this one was being spawned already did the work.
-    let already_fresh = read_entry(&path).is_some_and(|e| is_current(&e, key, unix_now()));
-    if !already_fresh {
+    let current = || read_entry(&path).is_some_and(|e| is_current(&e, key, unix_now()));
+    if current() {
+        // Nothing written (the usual hook case, e.g. after a Bash `ls`); a render's child still
+        // clears its marker, which would otherwise hold off the next spawn for 30 s.
+        if trigger == Trigger::Render {
+            let _ = fs::remove_file(&inflight);
+        }
+        return;
+    }
+    let Some(lock) = acquire_lock(&path, trigger) else {
+        return; // the refresh holding the lock clears the markers when it is done
+    };
+    // A refresh that finished while this one waited or was being spawned already did the work.
+    if !current() {
         let out = path.with_extension(format!("out{}", std::process::id()));
         let result = run_git(git, toplevel, &out, timeout).map(|text| parse_status(&text));
         let _ = fs::remove_file(&out);
@@ -301,8 +317,39 @@ pub fn refresh_with(cache_dir: &Path, toplevel: &str, git: &Path, timeout: Durat
         };
         write_entry(&path, &entry);
     }
-    let _ = fs::remove_file(path.with_extension("inflight"));
+    let _ = fs::remove_file(&inflight);
     let _ = fs::remove_file(&lock);
+}
+
+/// Takes `<entry>.lock`, first clearing one stranded past LOCK_MAX_AGE_S. A render's child gives
+/// up at once when it is held; the hook polls for up to LOCK_WAIT.
+fn acquire_lock(path: &Path, trigger: Trigger) -> Option<PathBuf> {
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let lock = path.with_extension("lock");
+    let wait = match trigger {
+        Trigger::Render => Duration::ZERO,
+        Trigger::Hook => LOCK_WAIT,
+    };
+    let deadline = Instant::now() + wait;
+    loop {
+        if file_age_secs(&lock).is_some_and(|age| age >= LOCK_MAX_AGE_S as f64) {
+            let _ = fs::remove_file(&lock);
+        }
+        let taken = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock)
+            .is_ok();
+        if taken {
+            return Some(lock);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(LOCK_POLL);
+    }
 }
 
 #[cfg(test)]
@@ -384,30 +431,37 @@ mod tests {
         assert!(!is_current(&unkeyed, Some(7), 1000.0 + TTL_S));
     }
 
-    #[test]
-    fn keyed_refresh_reruns_git_after_an_edit_and_is_reused_while_nothing_changes() {
-        let d = tempfile::tempdir().unwrap();
-        let home = d.path().join("home");
-        let repo = d.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        std::fs::write(repo.join("f.txt"), "1\n").unwrap();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
+    /// `<dir>/repo` with `f.txt` committed (so it has an index and a fingerprint); returns the
+    /// repo path and its canonical toplevel string, the cache key.
+    fn committed_repo(dir: &Path) -> (PathBuf, String) {
+        let repo = dir.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(repo.join("f.txt"), "1\n").unwrap();
+        for args in [
+            &["init", "-q"][..],
+            &["add", "."],
+            &["commit", "-qm", "init"],
+        ] {
+            let out = Command::new("git")
                 .args(["-c", "user.email=t@t", "-c", "user.name=t"])
                 .args(args)
                 .current_dir(&repo)
                 .output()
-                .unwrap()
-                .status
-                .success());
-        };
-        git(&["init", "-q"]);
-        git(&["add", "."]);
-        git(&["commit", "-qm", "init"]);
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        }
         let top = repo.canonicalize().unwrap().to_string_lossy().into_owned();
+        (repo, top)
+    }
+
+    #[test]
+    fn keyed_refresh_reruns_git_after_an_edit_and_is_reused_while_nothing_changes() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let (repo, top) = committed_repo(d.path());
         let path = cache_path(&home, &top);
 
-        refresh(&home, &top);
+        refresh(&home, &top, Trigger::Render);
         let e = read_entry(&path).unwrap();
         assert_eq!(e.dirty, Some(false));
         assert!(e.key.is_some());
@@ -418,8 +472,61 @@ mod tests {
 
         // An edit within the 30 s window is picked up by the very next refresh.
         std::fs::write(repo.join("f.txt"), "2\n").unwrap();
-        refresh(&home, &top);
+        refresh(&home, &top, Trigger::Render);
         assert_eq!(read_entry(&path).unwrap().dirty, Some(true));
+    }
+
+    #[test]
+    fn hook_on_an_unchanged_tree_runs_no_git_and_writes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let (_repo, top) = committed_repo(d.path());
+        let path = cache_path(&home, &top);
+        refresh(&home, &top, Trigger::Hook);
+        let before = read_entry(&path).expect("first hook wrote the entry");
+        // A render's marker must survive: the hook did not take over that render's child.
+        fs::write(path.with_extension("inflight"), b"").unwrap();
+
+        let marker = d.path().join("ran");
+        let git = fake_git(d.path(), &format!("touch '{}'", marker.display()));
+        refresh_with(&home, &top, &git, Duration::from_secs(5), Trigger::Hook);
+        assert!(!marker.exists(), "git ran although nothing changed");
+        assert_eq!(read_entry(&path).unwrap(), before);
+        let inflight = path.with_extension("inflight");
+        let inflight = inflight.file_name().unwrap().to_string_lossy();
+        assert_eq!(leftovers(&path), vec![inflight.into_owned()]);
+    }
+
+    #[test]
+    fn hook_waits_for_a_held_lock_and_then_sees_its_own_edit() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let (repo, top) = committed_repo(d.path());
+        let path = cache_path(&home, &top);
+        refresh(&home, &top, Trigger::Render);
+        // Another refresh holds the lock, its fingerprint taken before this edit.
+        fs::write(repo.join("f.txt"), "2\n").unwrap();
+        let lock = path.with_extension("lock");
+        fs::write(&lock, b"").unwrap();
+
+        // A render's child gives up and leaves the entry alone ...
+        refresh(&home, &top, Trigger::Render);
+        assert_eq!(read_entry(&path).unwrap().dirty, Some(false));
+
+        // ... the hook waits for the holder to finish, then refreshes.
+        let release = std::thread::spawn({
+            let lock = lock.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(150));
+                fs::remove_file(lock).unwrap();
+            }
+        });
+        let t0 = Instant::now();
+        refresh(&home, &top, Trigger::Hook);
+        release.join().unwrap();
+        assert!(t0.elapsed() >= Duration::from_millis(100), "did not wait");
+        assert_eq!(read_entry(&path).unwrap().dirty, Some(true));
+        assert!(!lock.exists());
     }
 
     #[test]
@@ -450,13 +557,13 @@ mod tests {
             "init",
         ]);
         let top = repo.canonicalize().unwrap().to_string_lossy().into_owned();
-        refresh(&home, &top);
+        refresh(&home, &top, Trigger::Render);
         let e = read_entry(&cache_path(&home, &top)).expect("entry written");
         assert_eq!(e.dirty, Some(false));
         assert_eq!((e.ahead, e.behind), (None, None));
         std::fs::write(repo.join("new.txt"), "x").unwrap();
         std::fs::remove_file(cache_path(&home, &top)).unwrap();
-        refresh(&home, &top);
+        refresh(&home, &top, Trigger::Render);
         assert_eq!(
             read_entry(&cache_path(&home, &top)).unwrap().dirty,
             Some(true)
@@ -535,7 +642,13 @@ mod tests {
         fs::write(path.with_extension("inflight"), b"").unwrap();
         let t0 = std::time::Instant::now();
         // short deadline keeps the suite fast; the binary uses GIT_TIMEOUT_S through `refresh`
-        refresh_with(&home, "/repo", &git, std::time::Duration::from_millis(300));
+        refresh_with(
+            &home,
+            "/repo",
+            &git,
+            std::time::Duration::from_millis(300),
+            Trigger::Render,
+        );
         let took = t0.elapsed().as_secs_f64();
         assert!(took < 1.5, "refresh took {took}s");
         let e = read_entry(&path).unwrap();
@@ -552,7 +665,13 @@ mod tests {
             d.path(),
             "printf '## main...origin/main [ahead 4, behind 2]\\n M src/x.rs\\n'",
         );
-        refresh_with(&home, "/repo", &git, std::time::Duration::from_secs(5));
+        refresh_with(
+            &home,
+            "/repo",
+            &git,
+            std::time::Duration::from_secs(5),
+            Trigger::Render,
+        );
         let path = cache_path(&home, "/repo");
         let e = read_entry(&path).unwrap();
         assert_eq!((e.dirty, e.ahead, e.behind), (Some(true), Some(4), Some(2)));
@@ -571,7 +690,13 @@ mod tests {
         // compare with the parsed value: serde_json's default float parsing may be 1 ULP off
         let seeded = read_entry(&path).unwrap().ts;
         fs::write(path.with_extension("inflight"), b"").unwrap();
-        refresh_with(&home, "/repo", &git, std::time::Duration::from_secs(5));
+        refresh_with(
+            &home,
+            "/repo",
+            &git,
+            std::time::Duration::from_secs(5),
+            Trigger::Render,
+        );
         assert!(!marker.exists(), "git ran although the entry was fresh");
         assert_eq!(read_entry(&path).unwrap().ts, seeded);
         assert_eq!(leftovers(&path), Vec::<String>::new());
@@ -588,7 +713,13 @@ mod tests {
         lock.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2 * 3600))
             .unwrap();
         drop(lock);
-        refresh_with(&home, "/repo", &git, std::time::Duration::from_secs(5));
+        refresh_with(
+            &home,
+            "/repo",
+            &git,
+            std::time::Duration::from_secs(5),
+            Trigger::Render,
+        );
         let e = read_entry(&path).unwrap();
         assert_eq!(e.dirty, Some(true));
         assert!(e.ts > 1000.0);
@@ -608,7 +739,13 @@ mod tests {
         lock.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(30))
             .unwrap();
         drop(lock);
-        refresh_with(&home, "/repo", &git, std::time::Duration::from_secs(5));
+        refresh_with(
+            &home,
+            "/repo",
+            &git,
+            std::time::Duration::from_secs(5),
+            Trigger::Render,
+        );
         let e = read_entry(&path).unwrap();
         assert_eq!(
             (e.dirty, e.ts),
@@ -675,7 +812,13 @@ mod tests {
         let pattern = format!("sleep 297.{}", std::process::id());
         let _guard = KillOnDrop(pattern.clone());
         let git = fake_git(d.path(), &format!("{pattern} &\nwait"));
-        refresh_with(&home, "/repo", &git, std::time::Duration::from_millis(300));
+        refresh_with(
+            &home,
+            "/repo",
+            &git,
+            std::time::Duration::from_millis(300),
+            Trigger::Render,
+        );
         assert_eq!(
             pids_matching(&pattern),
             Vec::<String>::new(),
