@@ -1,0 +1,49 @@
+{
+  "session_id": "22c85821-d8ba-4337-ad5d-081d207dedd5",
+  "transcript_path": "/home/someone/.claude/projects/-home-someone-dev-example-orbit/22c85821-d8ba-4337-ad5d-081d207dedd5.jsonl",
+  "cwd": "/home/someone/dev/example/orbit",
+  "model": {"id": "claude-fable-5-1", "display_name": "Fable 5.1"},
+  "workspace": {
+    "current_dir": "/home/someone/dev/example/orbit",
+    "project_dir": "/home/someone/dev/example/orbit",
+    "added_dirs": [],
+    "repo": {"host": "github.com", "owner": "exampleco", "name": "orbit"}
+  },
+  "version": "2.1.311",
+  "output_style": {"name": "default"},
+  "effort": {"level": "xhigh"},
+  "cost": {
+    "total_cost_usd": 1.5267014499999998,
+    "total_duration_ms": 349388,
+    "total_api_duration_ms": 83409,
+    "total_lines_added": 965,
+    "total_lines_removed": 253
+  },
+  "context_window": {
+    "total_input_tokens": 80000,
+    "total_output_tokens": 4000,
+    "context_window_size": 1000000,
+    "current_usage": {
+      "input_tokens": 1200,
+      "output_tokens": 300,
+      "cache_creation_input_tokens": 2000,
+      "cache_read_input_tokens": 78000
+    },
+    "used_percentage": 8,
+    "remaining_percentage": 92
+  },
+  "exceeds_200k_tokens": false,
+  "prompt_cache": {
+    "warm": true, "caching_observed": true, "ttl": "1h",
+    "expires_at": 1793063288, "requests": 4, "misses": 0,
+    "expected_rebuilds": 0, "hit_ratio": 0.98,
+    "cache_write_tokens": 2000, "miss_recache_tokens": 0,
+    "last_miss_at": null, "last_miss_cause": null, "recache_tokens_if_cold": 80000
+  },
+  "fast_mode": false,
+  "thinking": {"enabled": true},
+  "rate_limits": {
+    "five_hour": {"used_percentage": 1, "resets_at": 1793077200},
+    "seven_day": {"used_percentage": 16, "resets_at": 1793304000}
+  }
+}
