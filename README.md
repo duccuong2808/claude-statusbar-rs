@@ -24,8 +24,13 @@ In `~/.claude/settings.json` (replace the existing `statusLine` block; stop the 
 first with `cs daemon stop` if it is running):
 
 ```json
-"statusLine": { "type": "command", "command": "/home/someone/dev/projects/claude-statusbar-rs/target/release/csr", "refreshInterval": 1 }
+"statusLine": { "type": "command", "command": "/home/someone/dev/projects/claude-statusbar-rs/target/release/csr", "refreshInterval": 60 }
 ```
+
+Claude Code already re-runs the status line on every new message and at the prompt cache's
+`expires_at` / the rate-limit `resets_at`, so the timer only has to move the minute countdowns
+along while the session is idle; once a minute is enough (the cache countdown is shown in whole
+minutes for that reason).
 
 ## What it reads
 
@@ -35,8 +40,15 @@ first with `cs daemon stop` if it is running):
   `show_lines`, `show_duration`, `show_ahead_behind`, `show_projection`, `worktree_glyph`,
   `color_ok/warn/hot/worktree`, `warning_threshold`, `critical_threshold`). `CSR_CONFIG` overrides the path.
 - git: `.git/HEAD`, `.git/worktrees/*/gitdir`, `.git/config` (origin URL for the links).
-- `<cache dir>/git/<hash>.json`: dirty / ahead / behind, refreshed at most every 30 s by a
-  detached `csr git-refresh <toplevel>` child running `git --no-optional-locks status`.
+- `<cache dir>/git/<hash>.json`: dirty / ahead / behind from a detached `csr git-refresh
+  <toplevel>` child running `git --no-optional-locks status`. Each render first fingerprints the
+  worktree without spawning anything (`src/gitkey.rs`: `.git/index`, `lstat` of the tracked
+  files, the mtimes of their directories, HEAD and upstream commits, ignore files). Same
+  fingerprint → the entry is reused, so an idle session never runs git (backstop: re-checked
+  every 10 min); a new fingerprint refreshes right away. Submodules, split / sparse index,
+  SHA-256, `core.worktree` and indexes over 20 000 entries have no fingerprint and use a
+  30 s time-to-live instead. The fingerprint costs ~1 µs per tracked file on the render path
+  (~0.3 ms at 400 files, ~25 ms at 10 000).
 - `<cache dir>/rate_latest.json`: the freshest 5h/7d reading seen by any open Claude Code
   window (Claude Code only refreshes a session's quota when that session calls the API, so an
   idle window would otherwise show stale numbers). Merge rule: later reset wins; same reset keeps
@@ -54,6 +66,7 @@ rebuilt within one refresh after a reboot.
 - The shared quota file is one account only and has no "limits were raised" downgrade grace
   (a lower percentage with the same reset time is kept at the higher value until the window
   rolls over); cache countdown only from `prompt_cache.expires_at`.
+- Prompt-cache countdown in whole minutes (`❄ 4m`, `❄ <1m`) instead of `4m23s`.
 - Not rendered: language coach, relay balance, BYPASS, ocs, IP/fingerprint risk, mode line,
   todos/tools/agents, version/update hint, `New looks` hint.
 

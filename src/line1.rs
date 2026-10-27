@@ -1,7 +1,7 @@
 //! Aurora first line: `5h ■■■ 1% ⏰4h40m →12% │ 7d … │ Model ■■■■■■ 8% │ ❄ 49m` (port of styles.render_aurora).
 
 use crate::config::Config;
-use crate::format::{aurora_cache_text, projection_color, round_even, window_severity_rgb};
+use crate::format::{projection_color, round_even, window_severity_rgb};
 use crate::theme::{blend, fg, severity, Rgb, Theme, BOLD, RESET};
 
 /// Everything line 1 shows, already formatted by [`crate::render`].
@@ -96,14 +96,12 @@ pub fn window(
     out
 }
 
-/// COLD → hot; any `m`/`h` in the text → ok; bare seconds → warn.
+/// COLD → hot; the last minute (`<1m`) → warn; anything longer → ok.
 pub fn cache_color(t: &Theme, text: &str) -> Rgb {
-    if text == "COLD" {
-        t.s_hot
-    } else if text.contains('m') || text.contains('h') {
-        t.s_ok
-    } else {
-        t.s_warn
+    match text {
+        "COLD" => t.s_hot,
+        "<1m" => t.s_warn,
+        _ => t.s_ok,
     }
 }
 
@@ -157,7 +155,7 @@ pub fn render_line1(cfg: &Config, inp: &Line1Input) -> String {
         parts.push(format!(
             "{}❄ {}{RESET}",
             fg(cache_color(t, inp.cache_text)),
-            aurora_cache_text(inp.cache_text)
+            inp.cache_text
         ));
     }
     parts.join(&sep)
@@ -236,9 +234,18 @@ mod tests {
             model: "Fable 5.1",
             ctx_pct: Some(8.0),
             cost_text: "",
-            cache_text: "49m08s",
+            cache_text: "49m",
         };
         assert_eq!(render_line1(&c, &inp), first);
+    }
+
+    #[test]
+    fn cache_color_bands() {
+        let t = &cfg().theme;
+        assert_eq!(cache_color(t, "COLD"), t.s_hot);
+        assert_eq!(cache_color(t, "<1m"), t.s_warn);
+        assert_eq!(cache_color(t, "1m"), t.s_ok);
+        assert_eq!(cache_color(t, "1h00m"), t.s_ok);
     }
 
     #[test]

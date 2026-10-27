@@ -1,4 +1,7 @@
-//! 30-second cache of `git status` facts (port of git_cache.py + _git_refresh.py).
+//! Cache of `git status` facts (port of git_cache.py + _git_refresh.py), validated by
+//! `gitkey::key`: while the worktree's fingerprint matches the one stored with the entry, the
+//! entry is reused without running git (up to `MAX_AGE_S`); a different fingerprint makes it stale
+//! at once. Repos without a fingerprint fall back to a 30-second time-to-live.
 //! The render path only reads the cache; a stale cache spawns a detached `csr git-refresh`.
 
 use serde::{Deserialize, Serialize};
@@ -10,13 +13,20 @@ use std::time::{Duration, Instant};
 
 use crate::atomic_file;
 use crate::clock::unix_now;
+use crate::gitkey;
 
 pub const TTL_S: f64 = 30.0;
+/// A fingerprint-matched entry is still re-checked with git this often, as a backstop for what
+/// the fingerprint cannot see (files emptied out of an untracked directory, a custom
+/// core.excludesFile edited in place).
+pub const MAX_AGE_S: f64 = 600.0;
 pub const INFLIGHT_MAX_AGE_S: f64 = 30.0;
 const LOCK_MAX_AGE_S: u64 = 60;
 /// `git status` gets this long before it is killed (a hung git must never pile up children).
 pub const GIT_TIMEOUT_S: f64 = 5.0;
-const POLL: Duration = Duration::from_millis(20);
+/// Exit polling interval. A typical git run is ~10 ms, so a coarse poll would mostly be waiting;
+/// a 1 ms try_wait costs microseconds, even over the full timeout of a hung git.
+const POLL: Duration = Duration::from_millis(1);
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Entry {
@@ -25,6 +35,9 @@ pub struct Entry {
     pub ahead: Option<i64>,
     pub behind: Option<i64>,
     pub ts: f64,
+    /// `gitkey::key` taken just before the git run that produced this entry.
+    #[serde(default)]
+    pub key: Option<u64>,
 }
 
 pub fn fnv1a64(s: &str) -> u64 {
@@ -49,6 +62,16 @@ pub fn read_entry(path: &Path) -> Option<Entry> {
 pub fn is_fresh(e: &Entry, now: f64) -> bool {
     let age = now - e.ts;
     (0.0..TTL_S).contains(&age)
+}
+
+/// Whether `e` still describes the worktree whose fingerprint is now `key`.
+pub fn is_current(e: &Entry, key: Option<u64>, now: f64) -> bool {
+    match (e.key, key) {
+        (Some(a), Some(b)) if a == b => (0.0..MAX_AGE_S).contains(&(now - e.ts)),
+        (Some(_), Some(_)) => false,
+        // No fingerprint now, or none stored (failed git run, older cache file): time-to-live.
+        _ => is_fresh(e, now),
+    }
 }
 
 /// None when the file is missing. An mtime in the future (clock stepped back, or a network /
@@ -76,7 +99,7 @@ pub fn dirty_with_async_refresh(
     let path = cache_path(cache_dir, toplevel);
     let entry = read_entry(&path);
     if let Some(e) = &entry {
-        if is_fresh(e, now) {
+        if is_current(e, gitkey::key(Path::new(toplevel)), now) {
             return (e.dirty, entry);
         }
     }
@@ -252,8 +275,10 @@ pub fn refresh_with(cache_dir: &Path, toplevel: &str, git: &Path, timeout: Durat
     {
         return;
     }
+    // Taken before git runs: an edit made while it runs then leaves a mismatch, not a stale match.
+    let key = gitkey::key(Path::new(toplevel));
     // A refresh that finished while this one was being spawned already did the work.
-    let already_fresh = read_entry(&path).is_some_and(|e| is_fresh(&e, unix_now()));
+    let already_fresh = read_entry(&path).is_some_and(|e| is_current(&e, key, unix_now()));
     if !already_fresh {
         let out = path.with_extension(format!("out{}", std::process::id()));
         let result = run_git(git, toplevel, &out, timeout).map(|text| parse_status(&text));
@@ -265,11 +290,13 @@ pub fn refresh_with(cache_dir: &Path, toplevel: &str, git: &Path, timeout: Durat
                 ahead: st.ahead,
                 behind: st.behind,
                 ts: unix_now(),
+                key,
             }
         } else {
             let mut e = read_entry(&path).unwrap_or_default();
             e.toplevel = toplevel.to_string();
             e.ts = unix_now();
+            e.key = None; // retry after the time-to-live, not after MAX_AGE_S
             e
         };
         write_entry(&path, &entry);
@@ -327,11 +354,72 @@ mod tests {
             ahead: None,
             behind: None,
             ts: 1000.0,
+            key: None,
         };
         assert!(is_fresh(&e, 1000.0));
         assert!(is_fresh(&e, 1029.9));
         assert!(!is_fresh(&e, 1030.0));
         assert!(!is_fresh(&e, 999.0));
+    }
+
+    #[test]
+    fn matching_key_outlives_the_ttl_and_a_new_key_does_not_wait_for_it() {
+        let keyed = Entry {
+            ts: 1000.0,
+            key: Some(7),
+            ..Entry::default()
+        };
+        assert!(is_current(&keyed, Some(7), 1000.0 + TTL_S + 1.0));
+        assert!(is_current(&keyed, Some(7), 1000.0 + MAX_AGE_S - 0.1));
+        assert!(!is_current(&keyed, Some(7), 1000.0 + MAX_AGE_S));
+        assert!(!is_current(&keyed, Some(8), 1000.1));
+        // no fingerprint on either side: plain time-to-live
+        assert!(is_current(&keyed, None, 1000.0 + TTL_S - 0.1));
+        assert!(!is_current(&keyed, None, 1000.0 + TTL_S));
+        let unkeyed = Entry {
+            ts: 1000.0,
+            ..Entry::default()
+        };
+        assert!(is_current(&unkeyed, Some(7), 1000.0 + TTL_S - 0.1));
+        assert!(!is_current(&unkeyed, Some(7), 1000.0 + TTL_S));
+    }
+
+    #[test]
+    fn keyed_refresh_reruns_git_after_an_edit_and_is_reused_while_nothing_changes() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        let repo = d.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("f.txt"), "1\n").unwrap();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+        let top = repo.canonicalize().unwrap().to_string_lossy().into_owned();
+        let path = cache_path(&home, &top);
+
+        refresh(&home, &top);
+        let e = read_entry(&path).unwrap();
+        assert_eq!(e.dirty, Some(false));
+        assert!(e.key.is_some());
+        // Unchanged worktree: still served well past the 30 s time-to-live, nothing spawned.
+        let (dirty, _) = dirty_with_async_refresh(&home, &top, e.ts + 300.0);
+        assert_eq!(dirty, Some(false));
+        assert!(!path.with_extension("inflight").exists());
+
+        // An edit within the 30 s window is picked up by the very next refresh.
+        std::fs::write(repo.join("f.txt"), "2\n").unwrap();
+        refresh(&home, &top);
+        assert_eq!(read_entry(&path).unwrap().dirty, Some(true));
     }
 
     #[test]

@@ -91,8 +91,9 @@ fn renders_like_python_for_the_orbit_fixture() {
     // Isolated HOME: no user config, and a pre-seeded fresh dirty cache so no refresh is spawned
     // and the ● renders (Python's golden had its cache filled by a prior run).
     let home = tempfile::tempdir().unwrap();
-    // XDG_RUNTIME_DIR points the binary at <home>/csr, so the seed lives where it will look.
-    let cache_dir = home.path().join("csr");
+    // Seed where the child will look: <home>/csr on Linux (XDG_RUNTIME_DIR = home),
+    // <home>/.cache/csr on macOS.
+    let cache_dir = csr::cachedir::resolve_with(home.path(), home.path().to_str());
     let cache = csr::gitcache::cache_path(&cache_dir, repo_str);
     fs::create_dir_all(cache.parent().unwrap()).unwrap();
     fs::write(

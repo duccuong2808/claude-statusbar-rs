@@ -82,50 +82,21 @@ pub fn countdown_emoji(minutes_to_reset: Option<i64>) -> &'static str {
     }
 }
 
-/// activity.format_cache_remaining: "COLD" once gone, else `XhMMmSSs` / `MmSSs` / `Ss` (ceil).
+/// Prompt-cache countdown in whole minutes: "COLD" once gone, else `XhMMm` / `Mm` / `<1m`.
+/// Minutes, not Python's `MmSSs`, because the status line refreshes only once a minute (Claude
+/// Code re-renders by itself at `expires_at`). Floored, so a render up to a minute old is never
+/// more than a minute off.
 pub fn cache_remaining(remaining: f64) -> String {
     if remaining <= 0.0 {
         return "COLD".to_string();
     }
-    let r = remaining.ceil() as i64;
-    let secs = r % 60;
-    if r >= 3600 {
-        return format!("{}h{:02}m{:02}s", r / 3600, (r % 3600) / 60, secs);
-    }
-    let mins = r / 60;
-    if mins > 0 {
-        format!("{mins}m{secs:02}s")
+    let m = remaining as i64 / 60;
+    if m >= 60 {
+        format!("{}h{:02}m", m / 60, m % 60)
+    } else if m > 0 {
+        format!("{m}m")
     } else {
-        format!("{secs}s")
-    }
-}
-
-/// styles._aurora_cache_text: drop the seconds once ≥ 10 minutes or when hours are present.
-/// Regex in Python: `(\d+)m\d+s$`.
-pub fn aurora_cache_text(text: &str) -> String {
-    let Some(stripped) = text.strip_suffix('s') else {
-        return text.to_string();
-    };
-    let Some(mpos) = stripped.rfind('m') else {
-        return text.to_string();
-    };
-    let (head, secs) = stripped.split_at(mpos);
-    let secs = &secs[1..];
-    if secs.is_empty() || !secs.bytes().all(|b| b.is_ascii_digit()) {
-        return text.to_string();
-    }
-    let digits_start = head
-        .rfind(|c: char| !c.is_ascii_digit())
-        .map_or(0, |i| i + 1);
-    let mins = &head[digits_start..];
-    if mins.is_empty() {
-        return text.to_string();
-    }
-    let m: i64 = mins.parse().unwrap_or(0);
-    if text.contains('h') || m >= 10 {
-        format!("{head}m")
-    } else {
-        text.to_string()
+        "<1m".to_string()
     }
 }
 
@@ -304,14 +275,13 @@ mod tests {
     fn cache_countdown() {
         assert_eq!(cache_remaining(0.0), "COLD");
         assert_eq!(cache_remaining(-5.0), "COLD");
-        assert_eq!(cache_remaining(2947.95), "49m08s"); // ceil → 2948
-        assert_eq!(cache_remaining(3600.0), "1h00m00s");
-        assert_eq!(cache_remaining(45.0), "45s");
-        assert_eq!(aurora_cache_text("49m08s"), "49m");
-        assert_eq!(aurora_cache_text("1h00m00s"), "1h00m");
-        assert_eq!(aurora_cache_text("4m23s"), "4m23s");
-        assert_eq!(aurora_cache_text("45s"), "45s");
-        assert_eq!(aurora_cache_text("COLD"), "COLD");
+        assert_eq!(cache_remaining(2947.95), "49m"); // floor
+        assert_eq!(cache_remaining(3600.0), "1h00m");
+        assert_eq!(cache_remaining(3725.0), "1h02m");
+        assert_eq!(cache_remaining(299.5), "4m");
+        assert_eq!(cache_remaining(60.0), "1m");
+        assert_eq!(cache_remaining(45.0), "<1m");
+        assert_eq!(cache_remaining(0.2), "<1m");
     }
 
     #[test]

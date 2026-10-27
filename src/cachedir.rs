@@ -47,12 +47,18 @@ pub fn pick(cands: &[PathBuf], uid: u32) -> PathBuf {
 }
 
 pub fn resolve(home: &Path) -> PathBuf {
-    let uid = fs::metadata(home).map_or(0, |m| m.uid());
     let xdg = std::env::var("XDG_RUNTIME_DIR").ok();
+    resolve_with(home, xdg.as_deref())
+}
+
+/// `resolve` with `$XDG_RUNTIME_DIR` passed in, so a test can predict where a child process
+/// started with that environment will look, on whichever host OS it runs.
+pub fn resolve_with(home: &Path, xdg_runtime_dir: Option<&str>) -> PathBuf {
+    let uid = fs::metadata(home).map_or(0, |m| m.uid());
     pick(
         &candidates(
             home,
-            xdg.as_deref(),
+            xdg_runtime_dir,
             uid,
             if cfg!(target_os = "linux") {
                 Os::Linux
