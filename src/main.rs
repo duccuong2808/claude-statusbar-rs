@@ -38,6 +38,9 @@ fn columns(p: &Payload) -> Option<usize> {
 }
 
 const USAGE: &str = "usage: csr            render the status line from Claude Code's stdin JSON
+       csr themes     preview every built-in theme
+       csr theme      print the configured theme
+       csr theme <name>   set the theme in the config file
        csr hook       PostToolUse hook: bring the git cache up to date for the hook's cwd
        csr git-refresh <toplevel> [cache_dir]   (internal) refresh the dirty cache";
 
@@ -46,6 +49,22 @@ fn main() {
     match args.get(1).map(String::as_str) {
         None => render_stdin(),
         Some("hook") => hook_stdin(),
+        Some("themes") => list_themes(),
+        Some("theme") => match args.get(2) {
+            None => println!("{}", Config::load(&config_path(&home())).theme_name),
+            Some(name) => {
+                let path = config_path(&home());
+                if let Err(e) = csr::config::set_theme(&path, name) {
+                    eprintln!("csr: {e}");
+                    process::exit(2);
+                }
+                println!(
+                    "theme set to {} in {}",
+                    name.trim().to_ascii_lowercase(),
+                    path.display()
+                );
+            }
+        },
         Some("git-refresh") => {
             let Some(toplevel) = args.get(2) else {
                 eprintln!("csr: git-refresh needs <toplevel>\n{USAGE}");
@@ -63,6 +82,31 @@ fn main() {
             process::exit(2);
         }
     }
+}
+
+/// `csr themes`: each built-in theme's name, description and a two-line preview, drawn with the
+/// rest of the user's config (bar glyph, spacing) so it looks as it would in place. The
+/// preview shows the theme's own colours; `color_*` overrides are left out.
+fn list_themes() {
+    use std::fmt::Write as _;
+    let cfg = Config::load(&config_path(&home()));
+    let mut out = String::new();
+    for t in csr::theme::THEMES {
+        let mark = if t.name == cfg.theme_name {
+            " (current)"
+        } else if t.name == csr::theme::DEFAULT_THEME {
+            " (default)"
+        } else {
+            ""
+        };
+        let preview = csr::render::theme_preview(&Config {
+            theme: t.theme,
+            ..cfg.clone()
+        });
+        let _ = write!(out, "{}{mark}: {}\n{preview}\n\n", t.name, t.description);
+    }
+    out.push_str("set one with: csr theme <name>\n");
+    let _ = std::io::stdout().lock().write_all(out.as_bytes());
 }
 
 /// The one field `csr hook` needs from the hook payload. Everything else (`tool_input`,

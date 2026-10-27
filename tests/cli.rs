@@ -123,3 +123,59 @@ fn hook_refreshes_the_git_cache_for_the_session_cwd() {
         hook(junk);
     }
 }
+
+/// `csr themes` previews every built-in theme; `csr theme [name]` shows or sets the config's.
+#[test]
+fn theme_commands_list_show_and_set_the_configured_theme() {
+    let d = tempfile::tempdir().unwrap();
+    let cfg = d.path().join("cfg.json");
+    std::fs::write(&cfg, r#"{"show_cost":true}"#).unwrap();
+    let csr = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_csr"))
+            .args(args)
+            .env_clear()
+            .env("HOME", d.path())
+            .env("CSR_CONFIG", &cfg)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8(out.stdout).unwrap(),
+            String::from_utf8(out.stderr).unwrap(),
+        )
+    };
+
+    assert_eq!(
+        csr(&["theme"]),
+        (Some(0), "graphite\n".into(), String::new())
+    );
+    assert_eq!(csr(&["theme", "Nord"]).0, Some(0));
+    assert_eq!(csr(&["theme"]).1, "nord\n");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(
+        (v["theme"].as_str(), v["show_cost"].as_bool()),
+        (Some("nord"), Some(true))
+    );
+
+    let (code, out, err) = csr(&["theme", "bogus"]);
+    assert_eq!((code, out.as_str()), (Some(2), ""));
+    assert!(
+        err.contains("unknown theme") && err.contains("dracula"),
+        "{err}"
+    );
+    assert_eq!(
+        csr(&["theme"]).1,
+        "nord\n",
+        "a failed set leaves the config alone"
+    );
+
+    let (code, out, _) = csr(&["themes"]);
+    assert_eq!(code, Some(0));
+    for t in csr::theme::THEMES {
+        assert!(out.contains(t.name), "{} missing from:\n{out}", t.name);
+    }
+    assert!(out.contains("nord (current)"), "{out}");
+    assert!(out.contains("\x1b[38;2;"), "previews are coloured");
+}

@@ -8,12 +8,52 @@ use crate::format::{
     reset_5h, reset_7d, Reset5h, FIVE_HOUR_S, MIN_ELAPSED_5H, MIN_ELAPSED_7D, SEVEN_DAY_S,
 };
 use crate::gitcache::dirty_with_async_refresh;
-use crate::identity::resolve_identity;
+use crate::identity::{resolve_identity, Identity};
 use crate::line1::{render_line1, Line1Input};
 use crate::line2::{render_line2, Line2Input};
 use crate::payload::{Payload, Window};
 use crate::quota::{reconcile, Reading};
 use crate::width::{clip_lines, visible_width};
+
+/// Both lines drawn with made-up values that use every colour of `cfg.theme` (a warm and a
+/// hot bar, a dirty tree, a linked worktree): what `csr themes` shows for each theme.
+pub fn theme_preview(cfg: &Config) -> String {
+    let line1 = render_line1(
+        cfg,
+        &Line1Input {
+            msgs_pct: Some(45.0),
+            weekly_pct: Some(82.0),
+            reset_5h: "2h10m",
+            reset_7d: "1d4h",
+            countdown_emoji: "",
+            projection_5h: "→61%",
+            projection_7d: "→97%",
+            model: "Fable 5.1",
+            ctx_pct: Some(23.0),
+            cost_text: "",
+            cache_text: "4m",
+        },
+    );
+    let info = Identity {
+        project_name: "my-app".to_string(),
+        in_git: true,
+        branch: Some("main".to_string()),
+        worktree_count: 1,
+        ..Identity::default()
+    };
+    let line2 = render_line2(
+        cfg,
+        &Line2Input {
+            info: &info,
+            dirty: Some(true),
+            ahead: Some(1),
+            behind: None,
+            lines_text: &format_lines(42, 7),
+            duration_text: "",
+        },
+    );
+    format!("{line1}\n{line2}")
+}
 
 /// The process-level inputs to a render: clock, cache location and terminal width.
 #[derive(Debug, Clone, PartialEq)]

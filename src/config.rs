@@ -3,7 +3,7 @@
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
-use crate::theme::{Rgb, Theme, GRAPHITE};
+use crate::theme::{find, Rgb, Theme, DEFAULT_THEME, GRAPHITE};
 
 /// Spacing around the `│` separators (`density` in the config file).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -39,6 +39,9 @@ pub struct Config {
     pub show_ahead_behind: bool,
     pub show_projection: bool,
     pub worktree_glyph: String,
+    /// The built-in theme picked by the `theme` key (the default when unset or unknown).
+    pub theme_name: &'static str,
+    /// That theme's palette with the `color_*` overrides applied.
     pub theme: Theme,
     pub warning: f64,
     pub critical: f64,
@@ -58,6 +61,7 @@ impl Default for Config {
             show_ahead_behind: false,
             show_projection: true,
             worktree_glyph: "🌳".to_string(),
+            theme_name: DEFAULT_THEME,
             theme: GRAPHITE,
             warning: 30.0,
             critical: 70.0,
@@ -137,17 +141,27 @@ impl Config {
         if let Some(g) = get_str(&m, "worktree_glyph") {
             c.worktree_glyph = g.to_string();
         }
-        if let Some(rgb) = get_str(&m, "color_ok").and_then(parse_hex) {
-            c.theme.s_ok = rgb;
+        // themes.get_theme: an unknown name is the default theme. The color_* keys then
+        // override single colours of whichever theme was picked (Python has the last four).
+        if let Some(t) = get_str(&m, "theme").and_then(find) {
+            c.theme_name = t.name;
+            c.theme = t.theme;
         }
-        if let Some(rgb) = get_str(&m, "color_warn").and_then(parse_hex) {
-            c.theme.s_warn = rgb;
-        }
-        if let Some(rgb) = get_str(&m, "color_hot").and_then(parse_hex) {
-            c.theme.s_hot = rgb;
-        }
-        if let Some(rgb) = get_str(&m, "color_worktree").and_then(parse_hex) {
-            c.theme.wt = rgb;
+        let t = &mut c.theme;
+        let overrides: [(&str, &mut Rgb); 8] = [
+            ("color_ink", &mut t.ink),
+            ("color_mute", &mut t.mute),
+            ("color_edge", &mut t.edge),
+            ("color_line2", &mut t.pill_ink),
+            ("color_ok", &mut t.s_ok),
+            ("color_warn", &mut t.s_warn),
+            ("color_hot", &mut t.s_hot),
+            ("color_worktree", &mut t.wt),
+        ];
+        for (key, slot) in overrides {
+            if let Some(rgb) = get_str(&m, key).and_then(parse_hex) {
+                *slot = rgb;
+            }
         }
         // progress.normalize_thresholds: a missing (or null) side takes its default, then the
         // pair must satisfy 0 <= warning < critical <= 100; anything else keeps both defaults.
@@ -166,6 +180,61 @@ impl Config {
         }
         c
     }
+}
+
+/// Why `set_theme` left the config file alone.
+#[derive(Debug)]
+pub enum SetThemeError {
+    UnknownTheme(String),
+    /// The file exists but is not a JSON object; rewriting it would lose what is in it.
+    NotAnObject(PathBuf),
+    Io(PathBuf, std::io::Error),
+}
+
+impl std::fmt::Display for SetThemeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownTheme(name) => {
+                let names: Vec<&str> = crate::theme::THEMES.iter().map(|t| t.name).collect();
+                write!(f, "unknown theme {name:?} (one of: {})", names.join(", "))
+            }
+            Self::NotAnObject(p) => {
+                write!(f, "{} is not a JSON object; left unchanged", p.display())
+            }
+            Self::Io(p, e) => write!(f, "{}: {e}", p.display()),
+        }
+    }
+}
+
+impl std::error::Error for SetThemeError {}
+
+/// Sets `"theme"` in the config file at `path`, keeping every other key; creates the file (and
+/// its directory) when missing. The file is replaced atomically, rewritten as pretty JSON.
+///
+/// # Errors
+///
+/// An unknown theme name, a file that exists but is not a JSON object, or a read/write failure.
+/// The file is untouched in every error case.
+pub fn set_theme(path: &Path, name: &str) -> Result<(), SetThemeError> {
+    let theme = find(name).ok_or_else(|| SetThemeError::UnknownTheme(name.to_string()))?;
+    let mut map = match std::fs::read_to_string(path) {
+        Ok(text) if text.trim().is_empty() => Map::new(),
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(Value::Object(m)) => m,
+            _ => return Err(SetThemeError::NotAnObject(path.to_path_buf())),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Map::new(),
+        Err(e) => return Err(SetThemeError::Io(path.to_path_buf(), e)),
+    };
+    map.insert("theme".to_string(), Value::from(theme.name));
+    let mut text = serde_json::to_string_pretty(&Value::Object(map))
+        .expect("a JSON map of JSON values always serializes");
+    text.push('\n');
+    let io = |e| SetThemeError::Io(path.to_path_buf(), e);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(io)?;
+    }
+    crate::atomic_file::write(path, text.as_bytes()).map_err(io)
 }
 
 #[cfg(test)]
@@ -222,6 +291,47 @@ mod tests {
     }
 
     #[test]
+    fn theme_key_picks_the_palette_and_colour_keys_override_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("cfg.json");
+        let load = |json: &str| {
+            std::fs::write(&p, json).unwrap();
+            Config::load(&p)
+        };
+        let nord = crate::theme::by_name("nord").unwrap();
+        assert_eq!(load(r#"{"theme":"nord"}"#).theme, nord);
+        assert_eq!(load(r#"{"theme":"NORD"}"#).theme_name, "nord");
+        assert_eq!(load(r#"{"theme":"no-such"}"#).theme_name, DEFAULT_THEME);
+        assert_eq!(load(r#"{"theme":" Nord "}"#).theme, nord);
+        // unknown or non-string names fall back to the default, like Python's get_theme
+        assert_eq!(load(r#"{"theme":"no-such"}"#).theme, GRAPHITE);
+        assert_eq!(load(r#"{"theme":7}"#).theme, GRAPHITE);
+
+        // every colour can be overridden on top of the chosen theme, whatever the key order
+        let c = load(
+            r##"{"color_ink":"#010203","color_mute":"#040506","color_edge":"#070809",
+                 "color_line2":"#0a0b0c","color_ok":"#111","color_warn":"#222",
+                 "color_hot":"#333","color_worktree":"#444","theme":"nord"}"##,
+        );
+        let want = Theme {
+            ink: (1, 2, 3),
+            mute: (4, 5, 6),
+            edge: (7, 8, 9),
+            pill_ink: (10, 11, 12),
+            s_ok: (0x11, 0x11, 0x11),
+            s_warn: (0x22, 0x22, 0x22),
+            s_hot: (0x33, 0x33, 0x33),
+            wt: (0x44, 0x44, 0x44),
+        };
+        assert_eq!(c.theme, want);
+        // an override that does not parse keeps the theme's own colour
+        assert_eq!(
+            load(r#"{"theme":"nord","color_ink":"nope"}"#).theme.ink,
+            nord.ink
+        );
+    }
+
+    #[test]
     fn non_ascii_colour_does_not_panic() {
         assert_eq!(parse_hex("€"), None);
         assert_eq!(parse_hex("a€bc"), None);
@@ -268,5 +378,45 @@ mod tests {
         assert!(c.show_duration);
         assert!(c.show_project_branch);
         assert!(!c.show_ahead_behind); // missing → default
+    }
+
+    #[test]
+    fn set_theme_keeps_other_keys_and_refuses_what_it_cannot_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("sub").join("cfg.json");
+        // an empty file has nothing to lose
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, " \n").unwrap();
+        set_theme(&p, "nord").unwrap();
+        assert_eq!(Config::load(&p).theme_name, "nord");
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+        // missing file (and directory): created with just the theme
+        set_theme(&p, "Dracula").unwrap();
+        assert_eq!(Config::load(&p).theme_name, "dracula");
+
+        std::fs::write(&p, r#"{"show_cost":true,"theme":"nord","ui_version":3}"#).unwrap();
+        set_theme(&p, "gruvbox").unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["theme"], "gruvbox");
+        assert_eq!(
+            (v["show_cost"].clone(), v["ui_version"].clone()),
+            (Value::from(true), Value::from(3))
+        );
+
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert!(matches!(
+            set_theme(&p, "no-such"),
+            Err(SetThemeError::UnknownTheme(_))
+        ));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+
+        for junk in ["[1,2]", "{not json", "null"] {
+            std::fs::write(&p, junk).unwrap();
+            assert!(
+                matches!(set_theme(&p, "nord"), Err(SetThemeError::NotAnObject(_))),
+                "{junk:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), junk);
+        }
     }
 }
