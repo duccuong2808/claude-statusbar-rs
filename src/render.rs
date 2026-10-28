@@ -9,7 +9,7 @@ use crate::format::{
 };
 use crate::gitcache::dirty_with_async_refresh;
 use crate::identity::{resolve_identity, Identity};
-use crate::line1::{render_line1, Line1Input};
+use crate::line1::{render_line1, CacheStats, Line1Input};
 use crate::line2::{render_line2, Line2Input};
 use crate::payload::{Payload, Window};
 use crate::quota::{reconcile, Reading};
@@ -33,6 +33,11 @@ pub fn theme_preview(cfg: &Config) -> String {
             ctx_pct: Some(23.0),
             cost_text: "",
             cache_text: "4m",
+            cache_stats: cfg.cache_stats_on().then_some(CacheStats {
+                hit_pct: 92.0,
+                misses: 1,
+                requests: 30,
+            }),
         },
     );
     let info = Identity {
@@ -169,6 +174,22 @@ fn cache_text(p: &Payload, cfg: &Config, env: &Env) -> String {
     }
 }
 
+/// The prompt-cache record after `❄`; `None` when switched off or before the session has input
+/// tokens (`hit_ratio` is null until then).
+fn cache_stats(p: &Payload, cfg: &Config) -> Option<CacheStats> {
+    if !cfg.cache_stats_on() {
+        return None;
+    }
+    let c = p.prompt_cache.as_ref()?;
+    let hit = c.hit_ratio.filter(|h| h.is_finite())?;
+    let count = |n: Option<f64>| n.unwrap_or(0.0).max(0.0) as u64;
+    Some(CacheStats {
+        hit_pct: (hit * 100.0).clamp(0.0, 100.0),
+        misses: count(c.misses),
+        requests: count(c.requests),
+    })
+}
+
 /// `effort.level` when shown; empty when switched off or the model has no effort parameter.
 fn effort_text(p: &Payload, cfg: &Config) -> String {
     if !cfg.show_effort {
@@ -186,6 +207,7 @@ fn effort_text(p: &Payload, cfg: &Config) -> String {
 struct Optional {
     cost: String,
     cache: String,
+    cache_stats: Option<CacheStats>,
     effort: String,
     proj5: String,
     proj7: String,
@@ -194,7 +216,9 @@ struct Optional {
 impl Optional {
     /// narrow_layout "drop": shed one segment, least important first. False when none is left.
     fn shed(&mut self) -> bool {
-        if !self.cache.is_empty() {
+        if self.cache_stats.is_some() {
+            self.cache_stats = None;
+        } else if !self.cache.is_empty() {
             self.cache.clear();
         } else if !self.cost.is_empty() {
             self.cost.clear();
@@ -257,6 +281,7 @@ fn first_line(p: &Payload, cfg: &Config, env: &Env) -> String {
             String::new()
         },
         cache: cache_text(p, cfg, env),
+        cache_stats: cache_stats(p, cfg),
         effort: effort_text(p, cfg),
         proj5: projection(FIVE_HOUR_S, MIN_ELAPSED_5H, q5),
         proj7: projection(SEVEN_DAY_S, MIN_ELAPSED_7D, q7),
@@ -278,6 +303,7 @@ fn first_line(p: &Payload, cfg: &Config, env: &Env) -> String {
                 ctx_pct,
                 cost_text: &o.cost,
                 cache_text: &o.cache,
+                cache_stats: o.cache_stats,
             },
         )
     };
@@ -397,6 +423,43 @@ mod tests {
         let clipped = strip_ansi(&render(&p, &cfg, &env(Some(20))));
         assert_eq!(crate::width::visible_width(&clipped), 20);
         assert!(clipped.ends_with('…'));
+    }
+
+    #[test]
+    fn cache_stats_show_outside_the_default_theme_and_shed_first() {
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/stdin-orbit.json"
+        ))
+        .unwrap();
+        let p: crate::payload::Payload = serde_json::from_str(&raw).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let env = |columns: Option<usize>| Env {
+            now: 1793060340.0479221, // golden-orbit.now as f64
+            cache_dir: home.path().to_path_buf(),
+            columns,
+        };
+        let graphite = crate::config::Config {
+            show_project_branch: false,
+            ..Default::default()
+        };
+        assert!(strip_ansi(&render(&p, &graphite, &env(None))).ends_with("│ ❄ 49m"));
+        let on = crate::config::Config {
+            show_cache_stats: Some(true),
+            ..graphite
+        };
+        let full = strip_ansi(&render(&p, &on, &env(None)));
+        assert!(full.ends_with("│ ❄ 49m 98%"), "{full}");
+        let w = crate::width::visible_width(&full);
+        let narrow = strip_ansi(&render(&p, &on, &env(Some(w - 1))));
+        assert!(narrow.ends_with("│ ❄ 49m"), "{narrow}");
+        // misses, and a null hit ratio (no input tokens yet) → only the countdown
+        let first_line = |json: &str| {
+            let p: crate::payload::Payload = serde_json::from_str(json).unwrap();
+            strip_ansi(&render(&p, &on, &env(None)))
+        };
+        assert!(first_line(r#"{"cwd":"/nonexistent/x","prompt_cache":{"expires_at":1793063288,"hit_ratio":0.911,"misses":2,"requests":40}}"#).ends_with("│ ❄ 49m 91% ✗2"));
+        assert!(first_line(r#"{"cwd":"/nonexistent/x","prompt_cache":{"expires_at":1793063288,"hit_ratio":null,"misses":0}}"#).ends_with("│ ❄ 49m"));
     }
 
     #[test]

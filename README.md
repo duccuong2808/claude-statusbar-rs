@@ -42,11 +42,12 @@ transcript, and never runs git while drawing.
   (the default), `nord`, `dracula`, `gruvbox`, `catppuccin` and `solarized-light`. Pick one with
   `csr theme <name>`, or preview them all with `csr themes`. Any of the eight colours can be
   overridden on top of the chosen theme. Choosing a palette takes nanoseconds: renders measured
-  the same with and without themes (3.5–3.7 ms, 2.1 MiB).
+  the same with and without themes (3.5–3.7 ms, 2.1 MiB). Every theme except `graphite` also
+  shows the prompt cache's hit ratio and misses after the countdown (`❄ 49m 98% ✗2`).
 - **Quota stays fresh across windows.** Claude Code updates a session's 5h/7d numbers only when
   that session calls the API. `csr` shares the freshest reading between all open windows through
   a small cache file, so an idle window does not show stale quota.
-- **Tested on macOS and Linux.** It has 89 unit and integration tests, including a
+- **Tested on macOS and Linux.** It has 93 unit and integration tests, including a
   byte-for-byte golden test against the Python original. The cache directory is RAM-backed on
   Linux (`$XDG_RUNTIME_DIR` or `/dev/shm`), so periodic writes never reach the SSD.
 
@@ -54,7 +55,7 @@ transcript, and never runs git while drawing.
 
 Read these before choosing `csr`.
 
-- **One layout.** Themes change colours only. The segments, their order and the separators are
+- **One layout.** Themes change colours, and outside `graphite` add the cache stats. The segments, their order and the separators are
   always the aurora layout: no powerline, no widget picker, no TUI. Beyond the theme, the only
   settings are on/off switches, spacing, bar glyph and thresholds (see
   [Configuration](#configuration)). If you want to arrange your own segments, use
@@ -143,7 +144,7 @@ The other tools' features come from their READMEs as of 2026-10-27.
 |---|---|---|---|---|---|
 | Language | Rust | Python | TypeScript (Node/Bun) | Rust | Rust |
 | 5h / 7d quota bars | yes, with pace projection | yes, with projection | yes | yes, pace bars | yes |
-| Prompt-cache countdown | minutes | seconds | yes | yes, plus hit ratio | n/a |
+| Prompt-cache countdown | minutes, plus hit ratio and misses (not in `graphite`) | seconds | yes | yes, plus hit ratio | n/a |
 | Git dirty / ahead-behind | yes, background and fingerprinted | yes | yes, cached with a TTL | yes, background since 2.0 | through Starship |
 | Measured render (table above) | 3.8 ms | 87.6 ms | 242 ms | 7.2 ms | 5.7–24 ms |
 | Look | fixed layout, 6 themes | 3 styles; 1 theme since 3.50 | widgets, powerline, TUI | 30+ segments, skins, 13 palettes, TUI | TOML, Starship modules |
@@ -195,6 +196,7 @@ of its keys. Set `CSR_CONFIG` to use another path.
 | `show_weekly` | `true` | 7-day window |
 | `show_projection` | `true` | `→NN%` end-of-window projection |
 | `show_effort` | `true` | reasoning effort after the model name (`xhigh`); hidden when the model has none |
+| `show_cache_stats` | off in `graphite`, on in the other themes | cache hit ratio and misses after `❄`, see [Themes](#themes) |
 | `show_cache_age` | `true` | `❄` prompt-cache countdown |
 | `show_project_branch` | `true` | branch and project on line 2 |
 | `show_lines` | `true` | `+added −removed` for the session |
@@ -225,6 +227,16 @@ csr theme catppuccin   # set it (other keys in the file are kept)
 | `catppuccin` | Catppuccin Mocha (dark) |
 | `solarized-light` | Solarized light (light terminal backgrounds) |
 
+Every theme except `graphite` adds the prompt cache's record after the `❄` countdown:
+`❄ 49m 98% ✗2`. `graphite` keeps the claude-statusbar look; set `show_cache_stats` to `true` or
+`false` to choose for any theme.
+- **`98%`** is the share of this session's input tokens read from the cache (green from 90 %,
+  yellow from 70 %, red below).
+- **`✗2`** counts requests that re-processed what the cache already held, shown only when there
+  is one (yellow, red once they exceed a tenth of the requests).
+- Both come from stdin `prompt_cache`. They stay hidden until the first response, and go first
+  when the terminal is too narrow.
+
 Each colour is a hex string (`"#4ec85b"`, `"#4c5"`, `"4ec85b"`) that replaces one colour of the
 chosen theme. An invalid value keeps the theme's own colour.
 
@@ -250,8 +262,8 @@ Using the same file with the Python tool:
 
 ## How it works
 
-- **stdin.** `rate_limits`, `model`, `effort.level`, `context_window`,
-  `prompt_cache.expires_at`, `cost`, `workspace` and `cwd`.
+- **stdin.** `rate_limits`, `model`, `effort.level`, `context_window`, `prompt_cache`
+  (`expires_at`, `hit_ratio`, `misses`, `requests`), `cost`, `workspace` and `cwd`.
 - **git, read directly.** `.git/HEAD` for the branch, `.git/worktrees/*/gitdir` for live
   worktrees, `.git/config` for the origin URL used in the hyperlinks.
 - **Git cache: `<cache dir>/git/<hash>.json`.** Holds dirty, ahead and behind, filled by a

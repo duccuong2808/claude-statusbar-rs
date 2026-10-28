@@ -131,6 +131,13 @@ impl ContextWindow {
 pub struct PromptCache {
     #[serde(default, deserialize_with = "lenient")]
     pub expires_at: Option<f64>,
+    /// Cache reads over all input tokens, 0–1; `null` until the session has input tokens.
+    #[serde(default, deserialize_with = "lenient")]
+    pub hit_ratio: Option<f64>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub misses: Option<f64>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub requests: Option<f64>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone, PartialEq)]
@@ -210,9 +217,11 @@ mod tests {
         assert_eq!(rl.five_hour.as_ref().unwrap().resets_at, Some(1793077200.0));
         assert_eq!(rl.seven_day.as_ref().unwrap().pct(), 16.0);
         assert_eq!(p.context_window.as_ref().unwrap().ctx_pct(), Some(8.0));
+        let pc = p.prompt_cache.as_ref().unwrap();
+        assert_eq!(pc.expires_at, Some(1793063288.0));
         assert_eq!(
-            p.prompt_cache.as_ref().unwrap().expires_at,
-            Some(1793063288.0)
+            (pc.hit_ratio, pc.misses, pc.requests),
+            (Some(0.98), Some(0.0), Some(4.0))
         );
     }
 

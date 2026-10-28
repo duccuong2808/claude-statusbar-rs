@@ -100,6 +100,7 @@ fn list_themes() {
             ""
         };
         let preview = csr::render::theme_preview(&Config {
+            theme_name: t.name,
             theme: t.theme,
             ..cfg.clone()
         });

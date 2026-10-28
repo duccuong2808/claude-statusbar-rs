@@ -39,6 +39,8 @@ pub struct Config {
     pub show_ahead_behind: bool,
     pub show_projection: bool,
     pub show_effort: bool,
+    /// The `show_cache_stats` key; unset → see [`Config::cache_stats_on`].
+    pub show_cache_stats: Option<bool>,
     pub worktree_glyph: String,
     /// The built-in theme picked by the `theme` key (the default when unset or unknown).
     pub theme_name: &'static str,
@@ -62,6 +64,7 @@ impl Default for Config {
             show_ahead_behind: false,
             show_projection: true,
             show_effort: true,
+            show_cache_stats: None,
             worktree_glyph: "🌳".to_string(),
             theme_name: DEFAULT_THEME,
             theme: GRAPHITE,
@@ -118,6 +121,13 @@ pub fn parse_hex(s: &str) -> Option<Rgb> {
 }
 
 impl Config {
+    /// Cache hit ratio and misses after `❄`: off in the default theme, which keeps the
+    /// claude-statusbar look, and on in the others, unless `show_cache_stats` says otherwise.
+    pub fn cache_stats_on(&self) -> bool {
+        self.show_cache_stats
+            .unwrap_or(self.theme_name != DEFAULT_THEME)
+    }
+
     pub fn load(path: &Path) -> Config {
         let mut c = Config::default();
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -141,6 +151,9 @@ impl Config {
         c.show_ahead_behind = get_bool(&m, "show_ahead_behind", c.show_ahead_behind);
         c.show_projection = get_bool(&m, "show_projection", c.show_projection);
         c.show_effort = get_bool(&m, "show_effort", c.show_effort);
+        if m.contains_key("show_cache_stats") {
+            c.show_cache_stats = Some(get_bool(&m, "show_cache_stats", false));
+        }
         if let Some(g) = get_str(&m, "worktree_glyph") {
             c.worktree_glyph = g.to_string();
         }
@@ -259,6 +272,7 @@ mod tests {
                 && c.show_effort
         );
         assert!(!c.show_cost && !c.show_duration && !c.show_ahead_behind);
+        assert!(!c.cache_stats_on());
         assert_eq!(c.worktree_glyph, "🌳");
         assert_eq!(c.theme, GRAPHITE);
         assert_eq!((c.warning, c.critical), (30.0, 70.0));
@@ -422,5 +436,20 @@ mod tests {
             );
             assert_eq!(std::fs::read_to_string(&p).unwrap(), junk);
         }
+    }
+
+    #[test]
+    fn cache_stats_follow_the_theme_unless_the_key_is_set() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("c.json");
+        let load = |json: &str| {
+            std::fs::write(&p, json).unwrap();
+            Config::load(&p).cache_stats_on()
+        };
+        assert!(!load("{}"));
+        assert!(!load(r#"{"theme":"graphite"}"#));
+        assert!(load(r#"{"theme":"nord"}"#));
+        assert!(!load(r#"{"theme":"nord","show_cache_stats":false}"#));
+        assert!(load(r#"{"show_cache_stats":true}"#));
     }
 }

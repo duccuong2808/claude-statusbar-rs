@@ -5,6 +5,15 @@ use crate::config::Config;
 use crate::format::{projection_color, round_even, window_severity_rgb};
 use crate::theme::{blend, fg, severity, Rgb, Theme, BOLD, RESET};
 
+/// The session's prompt-cache record, drawn after the `❄` countdown.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CacheStats {
+    /// Cache reads as a percentage of all input tokens, 0–100.
+    pub hit_pct: f64,
+    pub misses: u64,
+    pub requests: u64,
+}
+
 /// Everything line 1 shows, already formatted by [`crate::render`].
 #[derive(Debug, Clone, Copy)]
 pub struct Line1Input<'a> {
@@ -21,6 +30,8 @@ pub struct Line1Input<'a> {
     pub ctx_pct: Option<f64>,
     pub cost_text: &'a str,
     pub cache_text: &'a str,
+    /// Shown only with the cache countdown; `None` → not shown.
+    pub cache_stats: Option<CacheStats>,
 }
 
 /// Gradient bar: each filled cell's hue is fixed by position (ok→warn over the first half,
@@ -108,6 +119,29 @@ pub fn cache_color(t: &Theme, text: &str) -> Rgb {
     }
 }
 
+/// ` 98%` (ok from 90 %, warn from 70 %, else hot), then ` ✗2` when there were misses: warn,
+/// or hot once they exceed a tenth of the requests.
+pub fn cache_stats_text(t: &Theme, s: CacheStats) -> String {
+    let hit = if s.hit_pct >= 90.0 {
+        t.s_ok
+    } else if s.hit_pct >= 70.0 {
+        t.s_warn
+    } else {
+        t.s_hot
+    };
+    let misses = if s.misses == 0 {
+        String::new()
+    } else {
+        let rgb = if s.misses.saturating_mul(10) > s.requests {
+            t.s_hot
+        } else {
+            t.s_warn
+        };
+        format!(" {}✗{}{RESET}", fg(rgb), s.misses)
+    };
+    format!(" {}{}%{RESET}{misses}", fg(hit), round_even(s.hit_pct))
+}
+
 pub fn render_line1(cfg: &Config, inp: &Line1Input) -> String {
     let t = &cfg.theme;
     let (ink, mute, edge) = (fg(t.ink), fg(t.mute), fg(t.edge));
@@ -157,8 +191,12 @@ pub fn render_line1(cfg: &Config, inp: &Line1Input) -> String {
         parts.push(format!("{mute}$ {ink}{}{RESET}", inp.cost_text));
     }
     if !inp.cache_text.is_empty() {
+        let stats = inp
+            .cache_stats
+            .map(|s| cache_stats_text(t, s))
+            .unwrap_or_default();
         parts.push(format!(
-            "{}❄ {}{RESET}",
+            "{}❄ {}{RESET}{stats}",
             fg(cache_color(t, inp.cache_text)),
             inp.cache_text
         ));
@@ -241,6 +279,7 @@ mod tests {
             ctx_pct: Some(8.0),
             cost_text: "",
             cache_text: "49m",
+            cache_stats: None,
         };
         assert_eq!(render_line1(&c, &inp), first);
     }
@@ -271,6 +310,7 @@ mod tests {
             ctx_pct: None,
             cost_text: "1.53",
             cache_text: "COLD",
+            cache_stats: None,
         };
         let out = render_line1(&c, &inp);
         assert!(out.contains("\x1b[38;2;200;134;171mOpus 5.5 (1M context)\x1b[0m"));
@@ -295,6 +335,7 @@ mod tests {
             ctx_pct: Some(10.0),
             cost_text: "",
             cache_text: "",
+            cache_stats: None,
         };
         let out = render_line1(&c, &inp);
         assert!(
@@ -322,6 +363,7 @@ mod tests {
             ctx_pct: Some(8.0),
             cost_text: "",
             cache_text: "",
+            cache_stats: None,
         };
         let out = render_line1(&c, &inp);
         assert!(
@@ -336,5 +378,62 @@ mod tests {
         assert!(render_line1(&c, &inp).ends_with(&format!(
             "\x1b[38;2;200;134;171mFable 5.1\x1b[0m {MUTE}xhigh\x1b[0m"
         )));
+    }
+
+    #[test]
+    fn cache_stats_colour_the_ratio_and_the_misses() {
+        let t = &cfg().theme;
+        let stats = |hit_pct, misses, requests| CacheStats {
+            hit_pct,
+            misses,
+            requests,
+        };
+        let (ok, warn, hot) = (fg(t.s_ok), fg(t.s_warn), fg(t.s_hot));
+        assert_eq!(
+            cache_stats_text(t, stats(98.0, 0, 4)),
+            format!(" {ok}98%{RESET}")
+        );
+        assert_eq!(
+            cache_stats_text(t, stats(85.0, 2, 40)),
+            format!(" {warn}85%{RESET} {warn}✗2{RESET}")
+        );
+        assert_eq!(
+            cache_stats_text(t, stats(60.0, 5, 20)),
+            format!(" {hot}60%{RESET} {hot}✗5{RESET}")
+        );
+    }
+
+    #[test]
+    fn cache_stats_follow_the_countdown_and_need_it() {
+        let c = cfg();
+        let mut inp = Line1Input {
+            msgs_pct: None,
+            weekly_pct: None,
+            reset_5h: "--",
+            reset_7d: "",
+            countdown_emoji: "",
+            projection_5h: "",
+            projection_7d: "",
+            model: "Fable 5.1",
+            effort: "",
+            ctx_pct: None,
+            cost_text: "",
+            cache_text: "COLD",
+            cache_stats: Some(CacheStats {
+                hit_pct: 91.0,
+                misses: 2,
+                requests: 40,
+            }),
+        };
+        let out = render_line1(&c, &inp);
+        assert!(
+            out.ends_with(&format!(
+                "\x1b[38;2;232;116;116m❄ COLD{RESET}{}",
+                cache_stats_text(&c.theme, inp.cache_stats.unwrap())
+            )),
+            "{out:?}"
+        );
+        inp.cache_text = "";
+        assert!(!render_line1(&c, &inp).contains('✗'));
     }
 }
