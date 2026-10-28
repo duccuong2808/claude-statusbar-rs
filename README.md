@@ -117,7 +117,7 @@ the table as the cost of the tool as shipped, not of identical work.
 Notes on each tool:
 
 - **CCometixLine 2.0.1** is the closest to `csr`. It takes about 2× the time and 4× the memory,
-  and it shows more by default, including a cache hit ratio read from the transcript.
+  and it shows more by default, including the prompt cache's hit ratio.
 - **CCometixLine 1.0.5** takes 14 ms outside a git repo and about 52 ms inside one, which fits
   git running on the render path. 2.0.1 moved git to the background, which matches the drop to
   7 ms.
