@@ -77,9 +77,11 @@ Read these before choosing `csr`.
   entries, and for submodules, split or sparse indexes, SHA-256 repos and `core.worktree`, there
   is no fingerprint. Those repos fall back to running `git status` in the background at most
   every 30 s.
-- **The fingerprint has blind spots.** Two cases can leave `●` stale for up to the 10-minute
-  backstop: emptying an untracked directory while keeping the directory, and editing a custom
-  `core.excludesFile` in place.
+- **The fingerprint has blind spots.** Three cases can leave `●` stale for up to the 10-minute
+  backstop: emptying an untracked directory while keeping the directory, editing a custom
+  `core.excludesFile` in place, and, on Linux, an untracked file created and deleted again
+  within one tick of the file system's clock (1–10 ms) with a render and its `git status` in
+  between.
 - **The hook is a best effort.** It is `async`, so a `git status` slower than Claude's next reply
   (a very large repo) still shows up one render late. Commands you type yourself with `!` are
   not tool calls, so the hook does not see them.

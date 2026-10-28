@@ -31,6 +31,13 @@ fn repo() -> (tempfile::TempDir, PathBuf) {
     (d, r)
 }
 
+/// Linux stamps files from a coarse clock (a tick is 1–10 ms), so creating and deleting an entry
+/// in the same directory within one tick leaves the directory's mtime, and the key, unchanged.
+/// Real edits are never that close to a render and its `git status`; the tests wait a tick.
+fn tick() {
+    std::thread::sleep(std::time::Duration::from_millis(25));
+}
+
 fn k(r: &Path) -> u64 {
     key(r).expect("supported repo")
 }
@@ -61,15 +68,19 @@ fn tracked_edit_changes_it_and_each_further_edit_too() {
 fn untracked_files_and_deletions_change_it() {
     let (_d, r) = repo();
     let k0 = k(&r);
+    tick();
     fs::write(r.join("new.txt"), "x").unwrap();
     let k1 = k(&r);
     assert_ne!(k1, k0);
+    tick();
     fs::remove_file(r.join("new.txt")).unwrap();
     let k2 = k(&r);
     assert_ne!(k2, k1);
+    tick();
     fs::write(r.join("sub/new.txt"), "x").unwrap();
     let k3 = k(&r);
     assert_ne!(k3, k2);
+    tick();
     fs::remove_file(r.join("a.txt")).unwrap();
     assert_ne!(k(&r), k3);
 }
