@@ -11,7 +11,7 @@ use crate::gitcache::dirty_with_async_refresh;
 use crate::identity::{resolve_identity, Identity};
 use crate::line1::{render_line1, CacheStats, Line1Input};
 use crate::line2::{render_line2, Line2Input};
-use crate::payload::{Payload, Window};
+use crate::payload::{Payload, Pr, Window};
 use crate::quota::{reconcile, Reading};
 use crate::width::{clip_lines, visible_width};
 
@@ -56,6 +56,12 @@ pub fn theme_preview(cfg: &Config) -> String {
             behind: None,
             lines_text: &format_lines(42, 7),
             duration_text: "",
+            pr: cfg.show_pr.then_some(&Pr {
+                number: Some(42),
+                url: None,
+                review_state: Some("approved".to_string()),
+                kind: None,
+            }),
         },
     );
     format!("{line1}\n{line2}")
@@ -348,6 +354,7 @@ fn second_line(p: &Payload, cfg: &Config, env: &Env) -> String {
             behind,
             lines_text: &lines_text,
             duration_text: &duration_text,
+            pr: p.pr.as_ref().filter(|_| cfg.show_pr),
         },
     )
 }

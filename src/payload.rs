@@ -35,6 +35,8 @@ pub struct Payload {
     #[serde(default, deserialize_with = "lenient")]
     pub effort: Option<Effort>,
     #[serde(default, deserialize_with = "lenient")]
+    pub pr: Option<Pr>,
+    #[serde(default, deserialize_with = "lenient")]
     pub cost: Cost,
     #[serde(default, deserialize_with = "lenient")]
     pub context_window: Option<ContextWindow>,
@@ -62,6 +64,23 @@ pub struct Model {
 pub struct Effort {
     #[serde(default, deserialize_with = "lenient")]
     pub level: Option<String>,
+}
+
+/// The open pull request (or GitLab merge request) of the current branch; absent once it
+/// merges or closes.
+#[derive(Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct Pr {
+    #[serde(default, deserialize_with = "lenient")]
+    pub number: Option<u64>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub url: Option<String>,
+    /// `approved`, `pending`, `changes_requested` or `draft`; may be absent.
+    #[serde(default, deserialize_with = "lenient")]
+    pub review_state: Option<String>,
+    /// `mr` for a GitLab merge request, absent for a GitHub pull request.
+    #[serde(default, deserialize_with = "lenient")]
+    pub kind: Option<String>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone, PartialEq)]
@@ -231,6 +250,7 @@ mod tests {
         assert_eq!(p.model.display_name, "");
         assert!(p.rate_limits.is_none());
         assert!(p.effort.is_none());
+        assert!(p.pr.is_none());
         assert_eq!(p.context_window.as_ref().unwrap().ctx_pct(), None);
         // key absent → Python default 0
         let p: Payload =
@@ -238,6 +258,19 @@ mod tests {
         assert_eq!(p.context_window.as_ref().unwrap().ctx_pct(), Some(0.0));
         let p: Payload = serde_json::from_str("{}").unwrap();
         assert!(p.context_window.is_none());
+    }
+
+    #[test]
+    fn parses_pr() {
+        let p: Payload = serde_json::from_str(
+            r#"{"pr":{"number":1234,"url":"https://github.com/o/r/pull/1234","review_state":"pending"}}"#,
+        )
+        .unwrap();
+        let pr = p.pr.unwrap();
+        assert_eq!(
+            (pr.number, pr.review_state.as_deref(), pr.kind),
+            (Some(1234), Some("pending"), None)
+        );
     }
 
     #[test]

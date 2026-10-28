@@ -4,7 +4,7 @@
 `unicode-width`) that draws the `aurora` look of
 [claude-statusbar](https://github.com/leeguooooo/claude-code-usage-bar) 3.52.2: 5-hour and 7-day
 quota bars with reset countdowns and pace projection, model with its reasoning effort and a
-context bar, prompt-cache countdown, and a git line.
+context bar, prompt-cache countdown, and a git line with the branch's open pull request.
 
 ```
 5h ■■■■■■■■■■■■  1% ⏰4h40m →16% │ 7d ■■■■■■■■■■■■ 16% ⏰2d19h →27% │ Fable 5.1 xhigh ■■■■■■ 8% │ ❄ 49m
@@ -47,7 +47,7 @@ transcript, and never runs git while drawing.
 - **Quota stays fresh across windows.** Claude Code updates a session's 5h/7d numbers only when
   that session calls the API. `csr` shares the freshest reading between all open windows through
   a small cache file, so an idle window does not show stale quota.
-- **Tested on macOS and Linux.** It has 93 unit and integration tests, including a
+- **Tested on macOS and Linux.** It has 95 unit and integration tests, including a
   byte-for-byte golden test against the Python original. The cache directory is RAM-backed on
   Linux (`$XDG_RUNTIME_DIR` or `/dev/shm`), so periodic writes never reach the SSD.
 
@@ -63,7 +63,7 @@ Read these before choosing `csr`.
   [CCometixLine](https://github.com/Haleclipse/CCometixLine) or
   [cship](https://github.com/stephenleo/cship).
 - **Fewer segments than the alternatives.** `csr` has no token counts or speeds, no session cost
-  rate, PR/CI status, memory, Claude Code version, custom commands or subagent line. From the
+  rate, CI status, memory, Claude Code version, custom commands or subagent line. From the
   Python original it drops the language coach, relay balance, IP checks, the mode line and the
   todos/tools/agents rows. Cost and session duration exist but are off by default, and so is
   ahead/behind (`show_ahead_behind`).
@@ -196,6 +196,7 @@ of its keys. Set `CSR_CONFIG` to use another path.
 | `show_weekly` | `true` | 7-day window |
 | `show_projection` | `true` | `→NN%` end-of-window projection |
 | `show_effort` | `true` | reasoning effort after the model name (`xhigh`); hidden when the model has none |
+| `show_pr` | `true` | the branch's open PR after the branch: `#42 ✓`, see below |
 | `show_cache_stats` | off in `graphite`, on in the other themes | cache hit ratio and misses after `❄`, see [Themes](#themes) |
 | `show_cache_age` | `true` | `❄` prompt-cache countdown |
 | `show_project_branch` | `true` | branch and project on line 2 |
@@ -209,6 +210,21 @@ of its keys. Set `CSR_CONFIG` to use another path.
 | `theme` | `graphite` | built-in palette; an unknown name falls back to `graphite` |
 | `color_*` | from the theme | override one colour, see below |
 | `warning_threshold` / `critical_threshold` | `30` / `70` | percentages where bars change colour |
+
+### Pull request
+
+With `show_pr` on (the default, in every theme), line 2 shows the branch's open pull request
+after the branch: `⎇ feature ● #42 ✓`. The number links to the PR, and a GitLab merge request
+reads `!42`. Claude Code finds the PR itself and passes it on stdin (`pr`), so `csr` makes no
+network call; the badge goes away once the PR merges or closes.
+
+| Review state | Shown |
+|---|---|
+| approved | `✓` (green) |
+| changes requested | `✗` (red) |
+| pending | `○` |
+| draft | `draft` (italic) |
+| not reported | the number alone |
 
 ### Themes
 
@@ -263,7 +279,7 @@ Using the same file with the Python tool:
 ## How it works
 
 - **stdin.** `rate_limits`, `model`, `effort.level`, `context_window`, `prompt_cache`
-  (`expires_at`, `hit_ratio`, `misses`, `requests`), `cost`, `workspace` and `cwd`.
+  (`expires_at`, `hit_ratio`, `misses`, `requests`), `pr`, `cost`, `workspace` and `cwd`.
 - **git, read directly.** `.git/HEAD` for the branch, `.git/worktrees/*/gitdir` for live
   worktrees, `.git/config` for the origin URL used in the hyperlinks.
 - **Git cache: `<cache dir>/git/<hash>.json`.** Holds dirty, ahead and behind, filled by a
