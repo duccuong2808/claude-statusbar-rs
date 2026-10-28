@@ -1,0 +1,82 @@
+name: Release
+
+# A `v*` tag builds every target and publishes a GitHub release. A pull request that touches
+# this file runs the same builds as a dry run, without releasing anything.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['.github/workflows/release.yml']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest, tool: cargo, smoke: true }
+          - { target: x86_64-apple-darwin, os: macos-latest, tool: cargo, smoke: false }
+          # Static musl binaries run on any Linux; `cross` builds both on an x86 runner.
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, tool: cross, smoke: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, tool: cross, smoke: false }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: matrix.tool == 'cross'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - run: ${{ matrix.tool }} build --release --locked --target ${{ matrix.target }}
+      - name: Smoke test
+        if: matrix.smoke
+        run: |
+          out=$(echo '{"model":{"display_name":"Opus"},"cwd":"/"}' | target/${{ matrix.target }}/release/csr)
+          echo "$out"
+          case "$out" in *Opus*) ;; *) echo "no model name in the output" >&2; exit 1 ;; esac
+      - name: Package
+        run: |
+          name=csr-${{ matrix.target }}
+          mkdir "$name"
+          cp target/${{ matrix.target }}/release/csr README.md "$name"/
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: csr-${{ matrix.target }}
+          path: csr-${{ matrix.target }}.tar.gz*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

@@ -67,8 +67,9 @@ Read these before choosing `csr`.
   Python original it drops the language coach, relay balance, IP checks, the mode line and the
   todos/tools/agents rows. Cost and session duration exist but are off by default, and so is
   ahead/behind (`show_ahead_behind`).
-- **Build from source only.** There are no release binaries, installer or package. You need a
-  Rust toolchain (1.87 or newer), and you write the `settings.json` entries yourself.
+- **No installer or package.** Release archives hold a bare binary for macOS and Linux; there is
+  no Homebrew, npm or cargo package, no Windows build, and you write the `settings.json` entries
+  yourself. The macOS binaries are not signed.
 - **Unix only.** It runs on macOS and Linux. Windows is not supported: the code uses Unix file
   metadata and process groups.
 - **Render cost grows with repo size.** The fingerprint `lstat`s every tracked file on each
@@ -148,7 +149,7 @@ The other tools' features come from their READMEs as of 2026-10-27.
 | Git dirty / ahead-behind | yes, background and fingerprinted | yes | yes, cached with a TTL | yes, background since 2.0 | through Starship |
 | Measured render (table above) | 3.8 ms | 87.6 ms | 242 ms | 7.2 ms | 5.7–24 ms |
 | Look | fixed layout, 6 themes | 3 styles; 1 theme since 3.50 | widgets, powerline, TUI | 30+ segments, skins, 13 palettes, TUI | TOML, Starship modules |
-| Install | build from source | pip / uv / script | `npx` / `bunx` | npm, releases | script, cargo |
+| Install | release binaries, source | pip / uv / script | `npx` / `bunx` | npm, releases | script, cargo |
 | Windows | no | yes | yes | yes | yes |
 
 **Pick `csr`** if you want the aurora look and the lowest possible per-render cost, on macOS or
@@ -156,6 +157,27 @@ Linux. **Pick something else** if you want to choose your own segments, need Win
 a packaged install.
 
 ## Install
+
+**From a release.** Each [release](https://github.com/duccuong2808/claude-statusbar-rs/releases)
+has an archive per platform, with a `.sha256` next to it:
+
+| Platform | Archive |
+|---|---|
+| macOS, Apple Silicon | `csr-aarch64-apple-darwin.tar.gz` |
+| macOS, Intel | `csr-x86_64-apple-darwin.tar.gz` |
+| Linux x64 (static, any distro) | `csr-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 (static, any distro) | `csr-aarch64-unknown-linux-musl.tar.gz` |
+
+```bash
+tar -xzf csr-aarch64-apple-darwin.tar.gz
+mkdir -p ~/.local/bin && mv csr-aarch64-apple-darwin/csr ~/.local/bin/
+xattr -d com.apple.quarantine ~/.local/bin/csr 2>/dev/null   # macOS, if downloaded in a browser
+```
+
+The binary is not signed, so macOS refuses to run one a browser downloaded until the quarantine
+flag is removed as above. `gh release download` and `curl` do not set the flag.
+
+**From source.** Rust 1.87 or newer:
 
 ```bash
 git clone https://github.com/duccuong2808/claude-statusbar-rs
