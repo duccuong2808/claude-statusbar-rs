@@ -1,4 +1,5 @@
-//! Aurora first line: `5h ■■■ 1% ⏰4h40m →12% │ 7d … │ Model ■■■■■■ 8% │ ❄ 49m` (port of styles.render_aurora).
+//! Aurora first line: `5h ■■■ 1% ⏰4h40m →12% │ 7d … │ Model xhigh ■■■■■■ 8% │ ❄ 49m` (port of
+//! styles.render_aurora; the effort level is csr's own).
 
 use crate::config::Config;
 use crate::format::{projection_color, round_even, window_severity_rgb};
@@ -15,6 +16,8 @@ pub struct Line1Input<'a> {
     pub projection_5h: &'a str,
     pub projection_7d: &'a str,
     pub model: &'a str,
+    /// Reasoning effort level (`xhigh`); empty → not shown.
+    pub effort: &'a str,
     pub ctx_pct: Option<f64>,
     pub cost_text: &'a str,
     pub cache_text: &'a str,
@@ -131,22 +134,24 @@ pub fn render_line1(cfg: &Config, inp: &Line1Input) -> String {
     }
 
     // A rose between hot and the worktree hue: reads as "the model", never as a severity.
+    // Python strips only the `(used/size)` it appended itself; the name's own parentheses stay
+    // (`(… context …)` was already removed by render::strip_context_suffix).
     let accent = fg(blend(t.s_hot, t.wt, 0.5));
-    match inp.ctx_pct {
-        Some(c) => {
-            // Python strips only the `(used/size)` it appended itself; the name's own parentheses
-            // stay (`(… context …)` was already removed by render::strip_context_suffix).
-            let name = inp.model;
-            let rgb = severity(t, c, 70.0, 85.0);
-            parts.push(format!(
-                "{accent}{name}{RESET} {} {}{}%{RESET}",
-                bar(cfg, Some(c), 6),
-                fg(rgb),
-                round_even(c)
-            ));
-        }
-        None => parts.push(format!("{accent}{}{RESET}", inp.model)),
-    }
+    let effort = if inp.effort.is_empty() {
+        String::new()
+    } else {
+        format!(" {mute}{}{RESET}", inp.effort)
+    };
+    let ctx = match inp.ctx_pct {
+        Some(c) => format!(
+            " {} {}{}%{RESET}",
+            bar(cfg, Some(c), 6),
+            fg(severity(t, c, 70.0, 85.0)),
+            round_even(c)
+        ),
+        None => String::new(),
+    };
+    parts.push(format!("{accent}{}{RESET}{effort}{ctx}", inp.model));
 
     if !inp.cost_text.is_empty() {
         parts.push(format!("{mute}$ {ink}{}{RESET}", inp.cost_text));
@@ -232,6 +237,7 @@ mod tests {
             projection_5h: "→12%",
             projection_7d: "→32%",
             model: "Fable 5.1",
+            effort: "",
             ctx_pct: Some(8.0),
             cost_text: "",
             cache_text: "49m",
@@ -261,6 +267,7 @@ mod tests {
             projection_5h: "",
             projection_7d: "",
             model: "Opus 5.5 (1M context)",
+            effort: "",
             ctx_pct: None,
             cost_text: "1.53",
             cache_text: "COLD",
@@ -284,6 +291,7 @@ mod tests {
             projection_5h: "",
             projection_7d: "",
             model: "Opus (beta)",
+            effort: "",
             ctx_pct: Some(10.0),
             cost_text: "",
             cache_text: "",
@@ -296,5 +304,37 @@ mod tests {
             )),
             "{out:?}"
         );
+    }
+
+    #[test]
+    fn effort_sits_between_the_model_and_the_ctx_bar() {
+        let c = cfg();
+        let mut inp = Line1Input {
+            msgs_pct: None,
+            weekly_pct: None,
+            reset_5h: "--",
+            reset_7d: "",
+            countdown_emoji: "",
+            projection_5h: "",
+            projection_7d: "",
+            model: "Fable 5.1",
+            effort: "xhigh",
+            ctx_pct: Some(8.0),
+            cost_text: "",
+            cache_text: "",
+        };
+        let out = render_line1(&c, &inp);
+        assert!(
+            out.contains(&format!(
+                "\x1b[38;2;200;134;171mFable 5.1\x1b[0m {MUTE}xhigh\x1b[0m {}",
+                bar(&c, Some(8.0), 6)
+            )),
+            "{out:?}"
+        );
+        // without a context bar the effort still follows the name
+        inp.ctx_pct = None;
+        assert!(render_line1(&c, &inp).ends_with(&format!(
+            "\x1b[38;2;200;134;171mFable 5.1\x1b[0m {MUTE}xhigh\x1b[0m"
+        )));
     }
 }

@@ -3,11 +3,11 @@
 `csr` is a single Rust binary (~640 KiB, two crates of dependencies: `serde` / `serde_json` and
 `unicode-width`) that draws the `aurora` look of
 [claude-statusbar](https://github.com/leeguooooo/claude-code-usage-bar) 3.52.2: 5-hour and 7-day
-quota bars with reset countdowns and pace projection, model and context bar, prompt-cache
-countdown, and a git line.
+quota bars with reset countdowns and pace projection, model with its reasoning effort and a
+context bar, prompt-cache countdown, and a git line.
 
 ```
-5h ■■■■■■■■■■■■  1% ⏰4h40m →16% │ 7d ■■■■■■■■■■■■ 16% ⏰2d19h →27% │ Fable 5.1 ■■■■■■ 8% │ ❄ 49m
+5h ■■■■■■■■■■■■  1% ⏰4h40m →16% │ 7d ■■■■■■■■■■■■ 16% ⏰2d19h →27% │ Fable 5.1 xhigh ■■■■■■ 8% │ ❄ 49m
 ⎇ development ●  ·  orbit  ·  +965 −253  ·  worktree (🌳1)
 ```
 
@@ -46,7 +46,7 @@ transcript, and never runs git while drawing.
 - **Quota stays fresh across windows.** Claude Code updates a session's 5h/7d numbers only when
   that session calls the API. `csr` shares the freshest reading between all open windows through
   a small cache file, so an idle window does not show stale quota.
-- **Tested on macOS and Linux.** It has 87 unit and integration tests, including a
+- **Tested on macOS and Linux.** It has 89 unit and integration tests, including a
   byte-for-byte golden test against the Python original. The cache directory is RAM-backed on
   Linux (`$XDG_RUNTIME_DIR` or `/dev/shm`), so periodic writes never reach the SSD.
 
@@ -194,6 +194,7 @@ of its keys. Set `CSR_CONFIG` to use another path.
 |---|---|---|
 | `show_weekly` | `true` | 7-day window |
 | `show_projection` | `true` | `→NN%` end-of-window projection |
+| `show_effort` | `true` | reasoning effort after the model name (`xhigh`); hidden when the model has none |
 | `show_cache_age` | `true` | `❄` prompt-cache countdown |
 | `show_project_branch` | `true` | branch and project on line 2 |
 | `show_lines` | `true` | `+added −removed` for the session |
@@ -249,8 +250,8 @@ Using the same file with the Python tool:
 
 ## How it works
 
-- **stdin.** `rate_limits`, `model`, `context_window`, `prompt_cache.expires_at`, `cost`,
-  `workspace` and `cwd`.
+- **stdin.** `rate_limits`, `model`, `effort.level`, `context_window`,
+  `prompt_cache.expires_at`, `cost`, `workspace` and `cwd`.
 - **git, read directly.** `.git/HEAD` for the branch, `.git/worktrees/*/gitdir` for live
   worktrees, `.git/config` for the origin URL used in the hyperlinks.
 - **Git cache: `<cache dir>/git/<hash>.json`.** Holds dirty, ahead and behind, filled by a

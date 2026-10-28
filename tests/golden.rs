@@ -88,9 +88,16 @@ fn renders_like_python_for_the_orbit_fixture() {
         "captured checkout path still in stdin"
     );
 
-    // Isolated HOME: no user config, and a pre-seeded fresh dirty cache so no refresh is spawned
+    // Isolated HOME: only the config below, and a pre-seeded fresh dirty cache so no refresh is spawned
     // and the ● renders (Python's golden had its cache filled by a prior run).
     let home = tempfile::tempdir().unwrap();
+    // The effort level is csr's own addition; Python 3.52.2 never draws it.
+    fs::create_dir_all(home.path().join(".claude")).unwrap();
+    fs::write(
+        home.path().join(".claude/claude-statusbar.json"),
+        r#"{"show_effort": false}"#,
+    )
+    .unwrap();
     // Seed where the child will look: <home>/csr on Linux (XDG_RUNTIME_DIR = home),
     // <home>/.cache/csr on macOS.
     let cache_dir = csr::cachedir::resolve_with(home.path(), home.path().to_str());

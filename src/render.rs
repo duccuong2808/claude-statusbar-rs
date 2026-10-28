@@ -29,6 +29,7 @@ pub fn theme_preview(cfg: &Config) -> String {
             projection_5h: "→61%",
             projection_7d: "→97%",
             model: "Fable 5.1",
+            effort: if cfg.show_effort { "high" } else { "" },
             ctx_pct: Some(23.0),
             cost_text: "",
             cache_text: "4m",
@@ -168,10 +169,24 @@ fn cache_text(p: &Payload, cfg: &Config, env: &Env) -> String {
     }
 }
 
+/// `effort.level` when shown; empty when switched off or the model has no effort parameter.
+fn effort_text(p: &Payload, cfg: &Config) -> String {
+    if !cfg.show_effort {
+        return String::new();
+    }
+    p.effort
+        .as_ref()
+        .and_then(|e| e.level.as_deref())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
 /// Line 1's optional segments; an empty string means "not shown".
 struct Optional {
     cost: String,
     cache: String,
+    effort: String,
     proj5: String,
     proj7: String,
 }
@@ -183,6 +198,8 @@ impl Optional {
             self.cache.clear();
         } else if !self.cost.is_empty() {
             self.cost.clear();
+        } else if !self.effort.is_empty() {
+            self.effort.clear();
         } else if !(self.proj5.is_empty() && self.proj7.is_empty()) {
             self.proj5.clear();
             self.proj7.clear();
@@ -240,6 +257,7 @@ fn first_line(p: &Payload, cfg: &Config, env: &Env) -> String {
             String::new()
         },
         cache: cache_text(p, cfg, env),
+        effort: effort_text(p, cfg),
         proj5: projection(FIVE_HOUR_S, MIN_ELAPSED_5H, q5),
         proj7: projection(SEVEN_DAY_S, MIN_ELAPSED_7D, q7),
     };
@@ -256,6 +274,7 @@ fn first_line(p: &Payload, cfg: &Config, env: &Env) -> String {
                 projection_5h: &o.proj5,
                 projection_7d: &o.proj7,
                 model: &model,
+                effort: &o.effort,
                 ctx_pct,
                 cost_text: &o.cost,
                 cache_text: &o.cache,
@@ -344,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn degrades_cache_then_cost_then_chips_before_clipping() {
+    fn degrades_cache_then_cost_then_effort_then_chips_before_clipping() {
         let raw = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/stdin-orbit.json"
@@ -365,16 +384,53 @@ mod tests {
         };
         let full = strip_ansi(&render(&p, &cfg, &env(None)));
         assert!(full.contains("❄") && full.contains("$ 1.53") && full.contains("→"));
+        assert!(full.contains("Fable 5.1 xhigh ■"));
         let w = crate::width::visible_width(&full);
         let no_cache = strip_ansi(&render(&p, &cfg, &env(Some(w - 1))));
         assert!(!no_cache.contains("❄") && no_cache.contains("$ 1.53"));
         let no_cost = strip_ansi(&render(&p, &cfg, &env(Some(w - 10))));
-        assert!(!no_cost.contains("$ ") && no_cost.contains("→"));
-        let no_chips = strip_ansi(&render(&p, &cfg, &env(Some(w - 20))));
+        assert!(!no_cost.contains("$ ") && no_cost.contains("xhigh"));
+        let no_effort = strip_ansi(&render(&p, &cfg, &env(Some(w - 20))));
+        assert!(!no_effort.contains("xhigh") && no_effort.contains("→"));
+        let no_chips = strip_ansi(&render(&p, &cfg, &env(Some(w - 26))));
         assert!(!no_chips.contains("→"));
         let clipped = strip_ansi(&render(&p, &cfg, &env(Some(20))));
         assert_eq!(crate::width::visible_width(&clipped), 20);
         assert!(clipped.ends_with('…'));
+    }
+
+    #[test]
+    fn effort_follows_the_payload_and_the_switch() {
+        let home = tempfile::tempdir().unwrap();
+        let env = Env {
+            now: 1000.0,
+            cache_dir: home.path().to_path_buf(),
+            columns: None,
+        };
+        let first_line = |cfg: &crate::config::Config, json: &str| {
+            let p: crate::payload::Payload = serde_json::from_str(json).unwrap();
+            strip_ansi(&render(&p, cfg, &env))
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let on = crate::config::Config::default();
+        let off = crate::config::Config {
+            show_effort: false,
+            ..Default::default()
+        };
+        let with = r#"{"cwd":"/nonexistent/x","model":{"display_name":"Opus 5.5"},"effort":{"level":"max"}}"#;
+        assert!(first_line(&on, with).ends_with(" │ Opus 5.5 max"));
+        assert!(first_line(&off, with).ends_with(" │ Opus 5.5"));
+        // no effort, a null level or an empty one → nothing after the name
+        for json in [
+            r#"{"cwd":"/nonexistent/x","model":{"display_name":"Opus 5.5"}}"#,
+            r#"{"cwd":"/nonexistent/x","model":{"display_name":"Opus 5.5"},"effort":{"level":null}}"#,
+            r#"{"cwd":"/nonexistent/x","model":{"display_name":"Opus 5.5"},"effort":{"level":""}}"#,
+        ] {
+            assert!(first_line(&on, json).ends_with(" │ Opus 5.5"), "{json}");
+        }
     }
 
     #[test]

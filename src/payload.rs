@@ -33,6 +33,8 @@ pub struct Payload {
     #[serde(default, deserialize_with = "lenient")]
     pub version: String,
     #[serde(default, deserialize_with = "lenient")]
+    pub effort: Option<Effort>,
+    #[serde(default, deserialize_with = "lenient")]
     pub cost: Cost,
     #[serde(default, deserialize_with = "lenient")]
     pub context_window: Option<ContextWindow>,
@@ -52,6 +54,14 @@ pub struct Model {
     pub id: String,
     #[serde(default, deserialize_with = "lenient")]
     pub display_name: String,
+}
+
+/// Absent when the model does not support the effort parameter.
+#[derive(Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct Effort {
+    #[serde(default, deserialize_with = "lenient")]
+    pub level: Option<String>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone, PartialEq)]
@@ -189,6 +199,7 @@ mod tests {
         .unwrap();
         let p: Payload = serde_json::from_str(&raw).unwrap();
         assert_eq!(p.model.display_name, "Fable 5.1");
+        assert_eq!(p.effort.as_ref().unwrap().level.as_deref(), Some("xhigh"));
         assert_eq!(
             p.workspace.repo.as_ref().unwrap().name.as_deref(),
             Some("orbit")
@@ -210,6 +221,7 @@ mod tests {
         let p: Payload = serde_json::from_str(r#"{"model":{"id":"x"},"context_window":{"context_window_size":200000,"used_percentage":null}}"#).unwrap();
         assert_eq!(p.model.display_name, "");
         assert!(p.rate_limits.is_none());
+        assert!(p.effort.is_none());
         assert_eq!(p.context_window.as_ref().unwrap().ctx_pct(), None);
         // key absent → Python default 0
         let p: Payload =

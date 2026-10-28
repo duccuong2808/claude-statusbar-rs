@@ -38,6 +38,7 @@ pub struct Config {
     pub show_duration: bool,
     pub show_ahead_behind: bool,
     pub show_projection: bool,
+    pub show_effort: bool,
     pub worktree_glyph: String,
     /// The built-in theme picked by the `theme` key (the default when unset or unknown).
     pub theme_name: &'static str,
@@ -60,6 +61,7 @@ impl Default for Config {
             show_duration: false,
             show_ahead_behind: false,
             show_projection: true,
+            show_effort: true,
             worktree_glyph: "🌳".to_string(),
             theme_name: DEFAULT_THEME,
             theme: GRAPHITE,
@@ -138,6 +140,7 @@ impl Config {
         c.show_duration = get_bool(&m, "show_duration", c.show_duration);
         c.show_ahead_behind = get_bool(&m, "show_ahead_behind", c.show_ahead_behind);
         c.show_projection = get_bool(&m, "show_projection", c.show_projection);
+        c.show_effort = get_bool(&m, "show_effort", c.show_effort);
         if let Some(g) = get_str(&m, "worktree_glyph") {
             c.worktree_glyph = g.to_string();
         }
@@ -253,6 +256,7 @@ mod tests {
                 && c.show_project_branch
                 && c.show_lines
                 && c.show_projection
+                && c.show_effort
         );
         assert!(!c.show_cost && !c.show_duration && !c.show_ahead_behind);
         assert_eq!(c.worktree_glyph, "🌳");
