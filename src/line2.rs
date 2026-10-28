@@ -1,13 +1,11 @@
-//! Aurora identity line: `⎇ main ●↓1 #42 ✓  ·  project  ·  +244 −3  ·  ⏱ 4m  ·  worktree (🌳1)`
-//! (port of styles.render_identity_line_aurora; the PR badge is csr's own). Muted palette:
-//! line 1 carries the color.
+//! Aurora identity line: `⎇ main ●↓1  ·  project  ·  +244 −3  ·  ⏱ 4m  ·  worktree (🌳1)`
+//! (port of styles.render_identity_line_aurora). Muted palette: line 1 carries the color.
 
 use std::fmt::Write as _;
 
 use crate::config::Config;
 use crate::identity::{branch_web_url, strip_repo_prefix, Identity};
-use crate::payload::Pr;
-use crate::theme::{blend, fg, Rgb, Theme, ITAL, RESET};
+use crate::theme::{blend, fg, Rgb, ITAL, RESET};
 
 /// Everything line 2 shows: project, branch, git state, activity.
 #[derive(Debug, Clone, Copy)]
@@ -18,8 +16,6 @@ pub struct Line2Input<'a> {
     pub behind: Option<i64>,
     pub lines_text: &'a str,
     pub duration_text: &'a str,
-    /// The branch's open PR, drawn after the branch; `None` → not shown.
-    pub pr: Option<&'a Pr>,
 }
 
 const QUIET_SEP: &str = "  ·  ";
@@ -49,27 +45,6 @@ fn ahead_behind_glyphs(ahead: Option<i64>, behind: Option<i64>) -> String {
         let _ = write!(s, "↓{b}");
     }
     s
-}
-
-/// `#42` (`!42` for a GitLab merge request) linked to the PR, then its review state: `✓`
-/// approved, `✗` changes requested, `○` pending, `draft`. `None` without a number.
-pub fn pr_badge(t: &Theme, pr: &Pr) -> Option<String> {
-    let n = pr.number?;
-    let sigil = if pr.kind.as_deref() == Some("mr") {
-        '!'
-    } else {
-        '#'
-    };
-    let number = format!("{}{sigil}{n}{RESET}", fg(blend(t.pill_ink, t.mute, 0.5)));
-    let soft = |c: Rgb| fg(blend(c, t.mute, 0.45));
-    let state = match pr.review_state.as_deref() {
-        Some("approved") => format!(" {}✓{RESET}", soft(t.s_ok)),
-        Some("changes_requested") => format!(" {}✗{RESET}", soft(t.s_hot)),
-        Some("pending") => format!(" {}○{RESET}", fg(t.mute)),
-        Some("draft") => format!(" {}{ITAL}draft{RESET}", fg(t.mute)),
-        _ => String::new(),
-    };
-    Some(hyperlink(&number, pr.url.as_deref()) + &state)
 }
 
 /// Display name of a linked worktree: its name minus a redundant repo prefix, collapsing to
@@ -126,10 +101,6 @@ pub fn render_line2(cfg: &Config, inp: &Line2Input) -> String {
         if !flags.is_empty() {
             head.push(' ');
             head.push_str(&c(&soft(t.s_warn), &flags));
-        }
-        if let Some(badge) = inp.pr.and_then(|pr| pr_badge(t, pr)) {
-            head.push(' ');
-            head.push_str(&badge);
         }
         segs.push(head);
     }
@@ -201,7 +172,6 @@ mod tests {
             behind: None,
             lines_text: "+965 -253",
             duration_text: "",
-            pr: None,
         };
         assert_eq!(render_line2(&Config::default(), &inp), second);
     }
@@ -228,7 +198,6 @@ mod tests {
             behind: Some(1),
             lines_text: "",
             duration_text: "5m",
-            pr: None,
         };
         assert_eq!(
             plain(&render_line2(&c, &inp)),
@@ -245,7 +214,6 @@ mod tests {
             behind: None,
             lines_text: "",
             duration_text: "",
-            pr: None,
         };
         let out = render_line2(&c, &inp);
         assert_eq!(plain(&out), "⎇ abc1234  ·  orbit");
@@ -268,7 +236,6 @@ mod tests {
             behind: None,
             lines_text: "",
             duration_text: "",
-            pr: None,
         };
         assert_eq!(
             plain(&render_line2(&c, &inp)),
@@ -291,7 +258,6 @@ mod tests {
             behind: None,
             lines_text: "",
             duration_text: "",
-            pr: None,
         };
         assert_eq!(plain(&render_line2(&c, &inp)), "notes  ·  no git");
     }
@@ -321,72 +287,7 @@ mod tests {
             behind: None,
             lines_text: "",
             duration_text: "",
-            pr: None,
         };
         assert_eq!(plain(&render_line2(&c, &inp)), "⎇ ?  ·  orbit");
-    }
-
-    #[test]
-    fn pr_badge_follows_the_branch() {
-        let c = Config::default();
-        let info = Identity {
-            worktree_count: 0,
-            web_url: None,
-            ..orbit()
-        };
-        let plain = |s: &str| {
-            crate::width::segments(s)
-                .iter()
-                .filter_map(|seg| match seg {
-                    crate::width::Segment::Text(t) => Some(*t),
-                    _ => None,
-                })
-                .collect::<String>()
-        };
-        let pr = |state: Option<&str>, kind: Option<&str>| Pr {
-            number: Some(42),
-            url: Some("https://github.com/o/r/pull/42".into()),
-            review_state: state.map(String::from),
-            kind: kind.map(String::from),
-        };
-        let line = |pr: &Pr| {
-            render_line2(
-                &c,
-                &Line2Input {
-                    info: &info,
-                    dirty: Some(true),
-                    ahead: None,
-                    behind: None,
-                    lines_text: "",
-                    duration_text: "",
-                    pr: Some(pr),
-                },
-            )
-        };
-        let approved = line(&pr(Some("approved"), None));
-        assert_eq!(plain(&approved), "⎇ development ● #42 ✓  ·  orbit");
-        assert!(approved.contains("\x1b]8;;https://github.com/o/r/pull/42\x07"));
-        assert_eq!(
-            plain(&line(&pr(Some("changes_requested"), None))),
-            "⎇ development ● #42 ✗  ·  orbit"
-        );
-        assert_eq!(
-            plain(&line(&pr(Some("pending"), Some("mr")))),
-            "⎇ development ● !42 ○  ·  orbit"
-        );
-        assert_eq!(
-            plain(&line(&pr(Some("draft"), None))),
-            "⎇ development ● #42 draft  ·  orbit"
-        );
-        assert_eq!(
-            plain(&line(&pr(None, None))),
-            "⎇ development ● #42  ·  orbit"
-        );
-        // no number → no badge
-        let no_number = Pr {
-            number: None,
-            ..pr(Some("approved"), None)
-        };
-        assert_eq!(plain(&line(&no_number)), "⎇ development ●  ·  orbit");
     }
 }

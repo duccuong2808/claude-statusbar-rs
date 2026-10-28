@@ -39,7 +39,6 @@ pub struct Config {
     pub show_ahead_behind: bool,
     pub show_projection: bool,
     pub show_effort: bool,
-    pub show_pr: bool,
     /// The `show_cache_stats` key; unset → see [`Config::cache_stats_on`].
     pub show_cache_stats: Option<bool>,
     pub worktree_glyph: String,
@@ -65,7 +64,6 @@ impl Default for Config {
             show_ahead_behind: false,
             show_projection: true,
             show_effort: true,
-            show_pr: true,
             show_cache_stats: None,
             worktree_glyph: "🌳".to_string(),
             theme_name: DEFAULT_THEME,
@@ -153,7 +151,6 @@ impl Config {
         c.show_ahead_behind = get_bool(&m, "show_ahead_behind", c.show_ahead_behind);
         c.show_projection = get_bool(&m, "show_projection", c.show_projection);
         c.show_effort = get_bool(&m, "show_effort", c.show_effort);
-        c.show_pr = get_bool(&m, "show_pr", c.show_pr);
         if m.contains_key("show_cache_stats") {
             c.show_cache_stats = Some(get_bool(&m, "show_cache_stats", false));
         }
@@ -273,7 +270,6 @@ mod tests {
                 && c.show_lines
                 && c.show_projection
                 && c.show_effort
-                && c.show_pr
         );
         assert!(!c.show_cost && !c.show_duration && !c.show_ahead_behind);
         assert!(!c.cache_stats_on());
