@@ -138,6 +138,18 @@ pub struct PromptCache {
     pub misses: Option<f64>,
     #[serde(default, deserialize_with = "lenient")]
     pub requests: Option<f64>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub last_miss_cause: Option<MissCause>,
+}
+
+/// Why Claude Code thinks the last miss happened; `null` until the first miss, and again when
+/// it could not tell.
+#[derive(Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct MissCause {
+    /// Such as `tools_changed`, `system_prompt_changed`, `ttl_expired_5m`, `likely_server_side`.
+    #[serde(default, deserialize_with = "lenient")]
+    pub causes: Vec<String>,
 }
 
 #[derive(Deserialize, Default, Debug, Clone, PartialEq)]
@@ -238,6 +250,17 @@ mod tests {
         assert_eq!(p.context_window.as_ref().unwrap().ctx_pct(), Some(0.0));
         let p: Payload = serde_json::from_str("{}").unwrap();
         assert!(p.context_window.is_none());
+    }
+
+    #[test]
+    fn parses_last_miss_cause() {
+        let pc: PromptCache = serde_json::from_str(
+            r#"{"misses":2,"last_miss_cause":{"causes":["tools_changed"],"tools_added":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(pc.last_miss_cause.unwrap().causes, ["tools_changed"]);
+        let pc: PromptCache = serde_json::from_str(r#"{"last_miss_cause":null}"#).unwrap();
+        assert!(pc.last_miss_cause.is_none());
     }
 
     #[test]

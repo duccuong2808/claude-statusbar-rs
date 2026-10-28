@@ -7,11 +7,13 @@ use crate::theme::{blend, fg, severity, Rgb, Theme, BOLD, RESET};
 
 /// The session's prompt-cache record, drawn after the `❄` countdown.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CacheStats {
+pub struct CacheStats<'a> {
     /// Cache reads as a percentage of all input tokens, 0–100.
     pub hit_pct: f64,
     pub misses: u64,
     pub requests: u64,
+    /// Likely causes of the last miss, as Claude Code names them; empty when unknown.
+    pub causes: &'a [String],
 }
 
 /// Everything line 1 shows, already formatted by [`crate::render`].
@@ -31,7 +33,7 @@ pub struct Line1Input<'a> {
     pub cost_text: &'a str,
     pub cache_text: &'a str,
     /// Shown only with the cache countdown; `None` → not shown.
-    pub cache_stats: Option<CacheStats>,
+    pub cache_stats: Option<CacheStats<'a>>,
 }
 
 /// Gradient bar: each filled cell's hue is fixed by position (ok→warn over the first half,
@@ -119,8 +121,19 @@ pub fn cache_color(t: &Theme, text: &str) -> Rgb {
     }
 }
 
-/// ` 98%` (ok from 90 %, warn from 70 %, else hot), then ` ✗2` when there were misses: warn,
-/// or hot once they exceed a tenth of the requests.
+/// Short name of a miss cause; a name this table does not know is shown as sent.
+fn miss_cause_label(cause: &str) -> &str {
+    match cause {
+        "tools_changed" => "tools",
+        "system_prompt_changed" => "system",
+        "likely_server_side" => "server",
+        c if c.starts_with("ttl_expired") => "ttl",
+        c => c,
+    }
+}
+
+/// ` 98%` (ok from 90 %, warn from 70 %, else hot), then ` ✗2` when there were misses (warn,
+/// or hot once they exceed a tenth of the requests) and the last miss's cause, ` tools`.
 pub fn cache_stats_text(t: &Theme, s: CacheStats) -> String {
     let hit = if s.hit_pct >= 90.0 {
         t.s_ok
@@ -137,7 +150,18 @@ pub fn cache_stats_text(t: &Theme, s: CacheStats) -> String {
         } else {
             t.s_warn
         };
-        format!(" {}✗{}{RESET}", fg(rgb), s.misses)
+        let causes: Vec<&str> = s
+            .causes
+            .iter()
+            .map(String::as_str)
+            .map(miss_cause_label)
+            .collect();
+        let cause = if causes.is_empty() {
+            String::new()
+        } else {
+            format!(" {}{}{RESET}", fg(t.mute), causes.join("+"))
+        };
+        format!(" {}✗{}{RESET}{cause}", fg(rgb), s.misses)
     };
     format!(" {}{}%{RESET}{misses}", fg(hit), round_even(s.hit_pct))
 }
@@ -387,6 +411,7 @@ mod tests {
             hit_pct,
             misses,
             requests,
+            causes: &[],
         };
         let (ok, warn, hot) = (fg(t.s_ok), fg(t.s_warn), fg(t.s_hot));
         assert_eq!(
@@ -401,6 +426,28 @@ mod tests {
             cache_stats_text(t, stats(60.0, 5, 20)),
             format!(" {hot}60%{RESET} {hot}✗5{RESET}")
         );
+        let mute = fg(t.mute);
+        let causes = ["tools_changed".to_string(), "ttl_expired_5m".to_string()];
+        let s = CacheStats {
+            causes: &causes,
+            ..stats(91.0, 2, 40)
+        };
+        assert_eq!(
+            cache_stats_text(t, s),
+            format!(" {ok}91%{RESET} {warn}✗2{RESET} {mute}tools+ttl{RESET}")
+        );
+        // a cause name this table does not know is shown as sent; no misses → no cause
+        let causes = ["new_cause".to_string()];
+        let s = CacheStats {
+            causes: &causes,
+            ..stats(91.0, 1, 40)
+        };
+        assert!(cache_stats_text(t, s).ends_with(&format!(" {mute}new_cause{RESET}")));
+        let s = CacheStats {
+            causes: &causes,
+            ..stats(91.0, 0, 40)
+        };
+        assert_eq!(cache_stats_text(t, s), format!(" {ok}91%{RESET}"));
     }
 
     #[test]
@@ -423,6 +470,7 @@ mod tests {
                 hit_pct: 91.0,
                 misses: 2,
                 requests: 40,
+                causes: &[],
             }),
         };
         let out = render_line1(&c, &inp);

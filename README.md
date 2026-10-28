@@ -47,7 +47,7 @@ transcript, and never runs git while drawing.
 - **Quota stays fresh across windows.** Claude Code updates a session's 5h/7d numbers only when
   that session calls the API. `csr` shares the freshest reading between all open windows through
   a small cache file, so an idle window does not show stale quota.
-- **Tested on macOS and Linux.** It has 93 unit and integration tests, including a
+- **Tested on macOS and Linux.** It has 94 unit and integration tests, including a
   byte-for-byte golden test against the Python original. The cache directory is RAM-backed on
   Linux (`$XDG_RUNTIME_DIR` or `/dev/shm`), so periodic writes never reach the SSD.
 
@@ -250,12 +250,15 @@ csr theme catppuccin   # set it (other keys in the file are kept)
 | `solarized-light` | Solarized light (light terminal backgrounds) |
 
 Every theme except `graphite` adds the prompt cache's record after the `❄` countdown:
-`❄ 49m 98% ✗2`. `graphite` keeps the claude-statusbar look; set `show_cache_stats` to `true` or
+`❄ 49m 91% ✗2 tools`. `graphite` keeps the claude-statusbar look; set `show_cache_stats` to `true` or
 `false` to choose for any theme.
 - **`98%`** is the share of this session's input tokens read from the cache (green from 90 %,
   yellow from 70 %, red below).
 - **`✗2`** counts requests that re-processed what the cache already held, shown only when there
   is one (yellow, red once they exceed a tenth of the requests).
+- **`tools`** after it names the likely cause of the last miss, when Claude Code could tell:
+  `tools` (tools added or removed), `system` (system prompt changed), `ttl` (the cache expired)
+  or `server`. Other causes show under Claude Code's own name, and several join with `+`.
 - Both come from stdin `prompt_cache`. They stay hidden until the first response, and go first
   when the terminal is too narrow.
 
@@ -285,7 +288,7 @@ Using the same file with the Python tool:
 ## How it works
 
 - **stdin.** `rate_limits`, `model`, `effort.level`, `context_window`, `prompt_cache`
-  (`expires_at`, `hit_ratio`, `misses`, `requests`), `cost`, `workspace` and `cwd`.
+  (`expires_at`, `hit_ratio`, `misses`, `requests`, `last_miss_cause`), `cost`, `workspace` and `cwd`.
 - **git, read directly.** `.git/HEAD` for the branch, `.git/worktrees/*/gitdir` for live
   worktrees, `.git/config` for the origin URL used in the hyperlinks.
 - **Git cache: `<cache dir>/git/<hash>.json`.** Holds dirty, ahead and behind, filled by a

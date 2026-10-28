@@ -37,6 +37,7 @@ pub fn theme_preview(cfg: &Config) -> String {
                 hit_pct: 92.0,
                 misses: 1,
                 requests: 30,
+                causes: &[],
             }),
         },
     );
@@ -176,7 +177,7 @@ fn cache_text(p: &Payload, cfg: &Config, env: &Env) -> String {
 
 /// The prompt-cache record after `❄`; `None` when switched off or before the session has input
 /// tokens (`hit_ratio` is null until then).
-fn cache_stats(p: &Payload, cfg: &Config) -> Option<CacheStats> {
+fn cache_stats<'p>(p: &'p Payload, cfg: &Config) -> Option<CacheStats<'p>> {
     if !cfg.cache_stats_on() {
         return None;
     }
@@ -187,6 +188,10 @@ fn cache_stats(p: &Payload, cfg: &Config) -> Option<CacheStats> {
         hit_pct: (hit * 100.0).clamp(0.0, 100.0),
         misses: count(c.misses),
         requests: count(c.requests),
+        causes: c
+            .last_miss_cause
+            .as_ref()
+            .map_or(&[][..], |m| m.causes.as_slice()),
     })
 }
 
@@ -204,16 +209,16 @@ fn effort_text(p: &Payload, cfg: &Config) -> String {
 }
 
 /// Line 1's optional segments; an empty string means "not shown".
-struct Optional {
+struct Optional<'p> {
     cost: String,
     cache: String,
-    cache_stats: Option<CacheStats>,
+    cache_stats: Option<CacheStats<'p>>,
     effort: String,
     proj5: String,
     proj7: String,
 }
 
-impl Optional {
+impl Optional<'_> {
     /// narrow_layout "drop": shed one segment, least important first. False when none is left.
     fn shed(&mut self) -> bool {
         if self.cache_stats.is_some() {
@@ -459,6 +464,7 @@ mod tests {
             strip_ansi(&render(&p, &on, &env(None)))
         };
         assert!(first_line(r#"{"cwd":"/nonexistent/x","prompt_cache":{"expires_at":1793063288,"hit_ratio":0.911,"misses":2,"requests":40}}"#).ends_with("│ ❄ 49m 91% ✗2"));
+        assert!(first_line(r#"{"cwd":"/nonexistent/x","prompt_cache":{"expires_at":1793063288,"hit_ratio":0.911,"misses":2,"requests":40,"last_miss_cause":{"causes":["system_prompt_changed"],"system_char_delta":120}}}"#).ends_with("│ ❄ 49m 91% ✗2 system"));
         assert!(first_line(r#"{"cwd":"/nonexistent/x","prompt_cache":{"expires_at":1793063288,"hit_ratio":null,"misses":0}}"#).ends_with("│ ❄ 49m"));
     }
 
